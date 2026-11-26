@@ -18,7 +18,8 @@ export async function createGuidedModel(signal:AbortSignal){
   '{"type":"finish","answer":"Answer based on the observed page"} for a result. Do not claim actions that did not happen.',
   '{"type":"ask","question":"What information is missing?"} if you need clarification or the request is unsupported.',
   '{"type":"draft","entries":[{"field":0,"value":"a value explicitly given by the user"}]} for a preview. Field is the index in the most recent fields array. Never invent personal details.',
-  'No click, navigation, file access, page typing or submission is available. Ask the user to do any such action. Do not infer missing private information.',
+  '{"type":"open_link","link":0} to propose opening a listed link with review. Link is the index in the latest links array.',
+  'The user must review a link or draft before any action. Do not request other clicks, uploads or submit actions. Do not infer missing private information.',
  ].join('\n')}]});
  if(signal.aborted){instance.destroy();signal.throwIfAborted()}
  return {
