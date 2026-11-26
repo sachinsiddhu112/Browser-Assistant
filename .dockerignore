@@ -1,0 +1,9 @@
+.git
+**/node_modules
+**/.output
+**/.wxt
+**/dist
+.local-cache
+.env*
+playwright-report
+test-results

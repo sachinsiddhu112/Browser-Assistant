@@ -9,6 +9,9 @@ class HealthController {
 class AppModule {}
 async function bootstrap(){
  const app=await NestFactory.create(AppModule);
- await app.listen(Number(process.env.PORT ?? 3000),'127.0.0.1');
+ const port=Number(process.env.PORT??3000);
+ if(!Number.isInteger(port)||port<1||port>65535)throw new Error('PORT must be an integer from 1 to 65535');
+ app.enableShutdownHooks();
+ await app.listen(port,process.env.HOST??'127.0.0.1');
 }
-void bootstrap();
+void bootstrap().catch(error=>{console.error(error);process.exitCode=1});
