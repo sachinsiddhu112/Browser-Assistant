@@ -1,5 +1,7 @@
 # Optional cloud fallback (private pilot)
 
+This guide is for the private preview. The later no-token client uses [the public cloud pilot](PUBLIC-CLOUD-PILOT.md).
+
 The normal **Run task** works as before (built-in commands first, then
 Chrome's on-device planner). For a free-form task on a Chrome installation
 without the local model, use **Optional cloud planner**. It will never switch

@@ -1,12 +1,5 @@
 import {parseGuidedDecision,type GuidedDecision,type GuidedSnapshot} from './guided-contract';
-export function cloudEndpoint(origin:string){
- const v=new URL(origin.trim());
- if(v.username||v.password||v.pathname!=='/'||v.search||v.hash)throw new Error('Enter only the planner origin, with no path.');
- if(v.protocol!=='https:'&&!(v.protocol==='http:'&&v.hostname==='localhost'))throw new Error('Use HTTPS, or http://localhost for a local test.');
- const allowed=new Set(['localhost','www.google.com','www.youtube.com']);
- if(v.protocol==='https:'&&allowed.has(v.hostname))throw new Error('Enter a dedicated planner host, not a browser skill site.');
- return {endpoint:v.origin+'/planner/next',host:v.protocol+'//'+v.hostname+'/*'};
-}
+import {PLANNER_ORIGIN} from './cloud-config';
 export function maskCloudText(value:string){
  return value
   .replace(/https?:\/\/\S+/gi,'[link]')
@@ -21,13 +14,18 @@ export function cloudPayload(goal:string,snapshot:GuidedSnapshot,previous:Guided
   canScrollUp:snapshot.canScrollUp,canScrollDown:snapshot.canScrollDown,
   previousDirections:previous.flatMap(e=>e.type==='scroll'?[e.direction]:[])};
 }
-export async function askCloud(endpoint:string,token:string,input:ReturnType<typeof cloudPayload>,signal:AbortSignal,send:typeof fetch=fetch){
- const response=await send(endpoint,{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+export async function askCloud(input:ReturnType<typeof cloudPayload>,signal:AbortSignal,send:typeof fetch=fetch){
+ const response=await send(PLANNER_ORIGIN+'/planner/next',{method:'POST',headers:{'Content-Type':'application/json'},
   cache:'no-store',credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',body:JSON.stringify(input),signal});
  if(!response.ok){
-  if(response.status===401)throw new Error('Check the private planner access token.');
-  if(response.status===429)throw new Error('Cloud planner limit reached. Try again shortly.');
-  if(response.status===503)throw new Error('The cloud planner is not configured on that server.');
+  if(response.status===401)throw new Error('This deployment has not enabled public cloud access yet.');
+  if(response.status===429){
+   const error=await response.json().catch(()=>null) as {message?:unknown}|null;
+   if(error?.message==='Per-IP limit reached (10 requests per minute)')throw new Error('This network reached 10 cloud requests in a minute. Try again shortly.');
+   if(error?.message==='Public planner daily limit reached')throw new Error('The shared cloud limit is used up for today. Local commands still work.');
+   throw new Error('Cloud planner is busy. Try again shortly; local commands still work.');
+  }
+  if(response.status===503)throw new Error('Public cloud is currently offline. Local commands still work.');
   throw new Error('Cloud planner could not complete a step.');
  }
  const body=await response.json() as {decision?:unknown};
