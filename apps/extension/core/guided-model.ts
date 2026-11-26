@@ -4,11 +4,16 @@ interface LocalSession {prompt(input:string,options:{signal:AbortSignal}):Promis
 interface LocalAPI {availability():Promise<string>;create(options:{initialPrompts:{role:'system';content:string}[]}):Promise<LocalSession>}
 const context=globalThis as typeof globalThis & {LanguageModel?:LocalAPI};
 export const GUIDE_TIMEOUT=GUIDED_TIMEOUT_MS-3000;
+export type LocalModelAvailability='available'|'downloadable'|'downloading'|'unavailable';
+export async function checkGuidedModel():Promise<LocalModelAvailability>{
+ try{
+  const state=await context.LanguageModel?.availability();
+  return state==='available'||state==='downloadable'||state==='downloading'?state:'unavailable';
+ }catch{return 'unavailable'}
+}
 export async function createGuidedModel(signal:AbortSignal){
  const model=context.LanguageModel;
- if(!model||await model.availability()!=='available'){
-  throw new Error('Chrome’s on-device model is not available. Try a supported typed command such as Scroll down or Search Google for React jobs.');
- }
+ if(!model)throw new Error('Chrome’s on-device model is not available.');
  signal.throwIfAborted();
  const instance=await model.create({initialPrompts:[{role:'system',content:[
   'You are a local page assistant. Choose exactly one next step for the user’s request.',
