@@ -28,3 +28,7 @@ kind and either the upstream HTTP status with a validated request ID (if
 present) or an allowlisted network error label. No headers, response body,
 secrets, model input or page content are logged. Browser-facing errors do not
 change. Tests simulate provider responses; they do not incur API usage.
+
+OpenAI JSON mode uses an explicit system message inside the Responses API
+`input` conversation, with task data in a separate user message. The planner
+still validates the result before sending it to the extension.
