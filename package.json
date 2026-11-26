@@ -1,0 +1,12 @@
+{
+  "name": "browser-assistant",
+  "private": true,
+  "packageManager": "pnpm@10.12.1",
+  "scripts": {
+    "dev:extension": "pnpm --filter @browser-assistant/extension dev",
+    "dev:backend": "pnpm --filter @browser-assistant/backend dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test"
+  }
+}
