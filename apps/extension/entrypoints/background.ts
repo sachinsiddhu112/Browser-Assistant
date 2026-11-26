@@ -34,6 +34,16 @@ export default defineBackground(()=>{
    }
    await finish(s,'success','Page opened');return;
   }
+  if(action.type==='go_back'){
+   const before=await step(s,()=>browser.tabs.get(s.tabId));
+   await step(s,()=>browser.tabs.goBack(s.tabId));
+   await waitFor(s,async()=>{const t=await browser.tabs.get(s.tabId);return t.status==='complete'&&t.url!==before.url?true:undefined});
+   await finish(s,'success','Returned to previous page');return;
+  }
+  if(action.type==='switch_tab'){
+   await step(s,async()=>{const current=await browser.tabs.get(s.tabId);const tabs=(await browser.tabs.query({windowId:current.windowId})).sort((a,b)=>a.index-b.index);const i=tabs.findIndex(t=>t.id===s.tabId);if(i<0||tabs.length<2)throw new Error('No other tab');const target=tabs[(i+(action.direction==='next'?1:tabs.length-1))%tabs.length];if(target.id===undefined)throw new Error('Tab unavailable');const updated=await browser.tabs.update(target.id,{active:true});if(!updated?.active)throw new Error('Tab switch not verified')});
+   await finish(s,'success','Switched tab');return;
+  }
   if(action.type==='scroll'){
    await step(s,async()=>{await browser.scripting.executeScript({target:{tabId:s.tabId},files:['/executor.js']});const r=await browser.tabs.sendMessage(s.tabId,{type:'EXECUTE_ACTION',action});if(!r?.ok)throw new Error(r?.error??'Scroll failed')});
    await finish(s,'success','Scroll requested');return;

@@ -5,6 +5,8 @@ export const Action = z.discriminatedUnion('type', [
   z.object({type:z.literal('click'),elementId:z.number().int().nonnegative(),snapshotId:z.string()}).strict(),
   z.object({type:z.literal('type'),elementId:z.number().int().nonnegative(),snapshotId:z.string(),text:z.string().max(4000)}).strict(),
   z.object({type:z.literal('scroll'),direction:z.enum(['up','down'])}).strict(),
+  z.object({type:z.literal('go_back')}).strict(),
+  z.object({type:z.literal('switch_tab'),direction:z.enum(['next','previous'])}).strict(),
   z.object({type:z.literal('done'),summary:z.string()}).strict()
 ]);
 export type AvatarState = z.infer<typeof AvatarState>;

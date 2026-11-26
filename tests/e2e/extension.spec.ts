@@ -29,6 +29,9 @@ test('extension local navigation and scrolling',async()=>{
   expect((await send('START',{command:'Open YouTube'})).ok).toBe(true);
   await expect.poll(async()=> (await send('GET_STATE')).session?.phase).toBe('success');
   await expect(site).toHaveURL('https://www.youtube.com/');
+  expect((await send('START',{command:'Go back'})).ok).toBe(true);
+  await expect.poll(async()=> (await send('GET_STATE')).session?.phase).toBe('success');
+  await expect(site).toHaveURL('https://example.com/');
   await panel.reload();
   await expect(panel.getByRole('status')).toContainText('success');
  }finally{await context.close();await rm(dir,{recursive:true,force:true})}

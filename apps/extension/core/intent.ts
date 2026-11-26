@@ -1,6 +1,8 @@
 import {Action} from '@browser-assistant/shared';
 export function routeIntent(command:string):Action|null{
  const c=command.trim();
+ if(/^go back$/i.test(c))return {type:'go_back'};
+ if(/^(next|previous) tab$/i.test(c))return {type:'switch_tab',direction:c.toLowerCase().startsWith('next')?'next':'previous'};
  if(/^scroll (up|down)$/i.test(c))return {type:'scroll',direction:c.toLowerCase().endsWith('up')?'up':'down'};
  const song=/^play (.+) on youtube$/i.exec(c);
  if(song)return {type:'navigate',url:'https://www.youtube.com/results?search_query='+encodeURIComponent(song[1])};
