@@ -1,13 +1,14 @@
-export default defineUnlistedScript(() => {
+import {Session} from '../core/session';
+export default defineUnlistedScript(()=>{
  const id='browser-assistant-overlay';
- if(document.getElementById(id)) return;
- const host=document.createElement('div');host.id=id;
- host.style.cssText='position:fixed;bottom:24px;right:24px;z-index:2147483647';
+ if(document.getElementById(id))return;
+ const host=document.createElement('div');host.id=id;host.style.cssText='position:fixed;bottom:24px;right:24px;z-index:2147483647';
  const root=host.attachShadow({mode:'closed'});
- const panel=document.createElement('div');
- panel.style.cssText='display:flex;align-items:center;gap:12px;background:#172033;color:white;padding:12px;border-radius:16px;font:14px system-ui;box-shadow:0 4px 18px #0004';
- const avatar=document.createElement('span');avatar.textContent='●';avatar.style.cssText='color:#a5b4fc;font-size:32px';
- const label=document.createElement('span');label.textContent='Assistant · Idle';
- const close=document.createElement('button');close.textContent='×';close.setAttribute('aria-label','Close assistant');close.onclick=()=>host.remove();
- panel.append(avatar,label,close);root.append(panel);document.documentElement.append(host);
+ const style=document.createElement('style');style.textContent='section{display:flex;align-items:center;gap:12px;background:#172033;color:white;padding:12px;border-radius:16px;font:14px system-ui;box-shadow:0 4px 18px #0004} .orb{width:32px;height:32px;border-radius:50%;background:#a5b4fc} .busy{animation:pulse 1s infinite alternate}@keyframes pulse{to{transform:scale(.8);opacity:.55}} @media(prefers-reduced-motion:reduce){.busy{animation:none}}';
+ const panel=document.createElement('section'),avatar=document.createElement('span'),label=document.createElement('span'),close=document.createElement('button');
+ avatar.className='orb';label.textContent='Assistant · Idle';close.textContent='×';close.setAttribute('aria-label','Close assistant');
+ const listener=(raw:unknown,sender:{id?:string;tab?:unknown})=>{if(sender.id!==browser.runtime.id||sender.tab)return;const msg=raw as {type?:string;session?:unknown};if(msg?.type!=='STATE')return;const p=Session.safeParse(msg.session);if(!p.success)return;label.textContent='Assistant · '+p.data.phase;avatar.classList.toggle('busy',['thinking','acting'].includes(p.data.phase))};
+ browser.runtime.onMessage.addListener(listener);
+ close.onclick=()=>{browser.runtime.onMessage.removeListener(listener);host.remove()};
+ panel.append(avatar,label,close);root.append(style,panel);document.documentElement.append(host);
 });
