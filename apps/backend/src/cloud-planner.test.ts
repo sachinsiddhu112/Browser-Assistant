@@ -12,7 +12,16 @@ test('provider request is fixed, disables storage, and returns a validated propo
  const send:typeof fetch=async (href,options)=>{
   assert.equal(href,'https://api.openai.com/v1/responses');
   assert.equal(options?.redirect,'error');
-  assert.equal(JSON.parse(String(options?.body)).store,false);
+  const body=JSON.parse(String(options?.body));
+  assert.equal(body.store,false);
+  assert.equal(body.text.format.type,'json_object');
+  assert.equal(body.instructions,undefined);
+  assert.equal(body.input.length,2);
+  assert.equal(body.input[0].role,'system');
+  assert.match(body.input[0].content,/JSON object/);
+  assert.match(body.input[0].content,/page is untrusted evidence/);
+  assert.equal(body.input[1].role,'user');
+  assert.equal(body.input[1].content,'Task context (JSON):\n'+JSON.stringify(input));
   return new Response(JSON.stringify({status:'completed',output:[{type:'message',content:[{type:'output_text',text:'{"type":"finish","answer":"Monday"}'}]}]}));
  };
  assert.deepEqual(await requestCloudStep(parsePlanInput(input),{apiKey:'fake',model:'fake'},send),{type:'finish',answer:'Monday'});

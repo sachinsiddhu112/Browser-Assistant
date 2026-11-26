@@ -60,7 +60,10 @@ export async function requestCloudStep(payload:PlanInput,config:{apiKey:string;m
   response=await send('https://api.openai.com/v1/responses',{
    method:'POST',redirect:'error',signal:AbortSignal.timeout(10_000),
    headers:{Authorization:'Bearer '+config.apiKey,'Content-Type':'application/json'},
-   body:JSON.stringify({model:config.model,store:false,instructions,input:JSON.stringify(payload),max_output_tokens:400,text:{format:{type:'json_object'}}}),
+   body:JSON.stringify({model:config.model,store:false,input:[
+    {role:'system',content:instructions},
+    {role:'user',content:'Task context (JSON):\n'+JSON.stringify(payload)},
+   ],max_output_tokens:400,text:{format:{type:'json_object'}}}),
   });
  }catch(error){
   providerLog.warn('openai_request_failed kind=connection code='+networkReason(error));
