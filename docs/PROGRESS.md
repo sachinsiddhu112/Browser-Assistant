@@ -19,3 +19,18 @@ a reviewed on-device intent draft and local English dictation when supported.
   and a live smoke test in the native Chrome side panel remain required.
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for installation and verification.
+
+## Unified Run task (after the reviewed-actions pilot)
+
+The side panel checks Chrome's Prompt API when it opens and again for free-form
+requests. **Run task** always tries the built-in skill router first. Free-form
+tasks use the local model when it is ready. When the model is unavailable, still
+downloading, or cannot start, Run shows the cloud sharing review; it does not
+auto-download the model or send data. With a planner origin and private token
+entered, the same button becomes **Approve and continue**. Approval applies to
+the current command and page only. Edits, tab changes and navigation clear the
+review. A started local task never switches to cloud mid-run.
+
+Cloud still requires a configured backend and preserves its existing action and
+page-data limits. Use only public pages and non-confidential commands for cloud
+tasks. Built-in actions continue to work without a planner.
