@@ -1,5 +1,6 @@
 import * as assert from 'node:assert/strict';
 import {test} from 'node:test';
+import {Logger} from '@nestjs/common';
 import {CloudPlannerController,parseCloudStep,parsePlanInput,requestCloudStep} from './cloud-planner';
 const input={goal:'Find the deadline',text:['The deadline is Monday.'],canScrollUp:false,canScrollDown:true,previousDirections:[]};
 test('drops requests outside the minimised contract',()=>{
@@ -39,4 +40,36 @@ test('disabled, unauthenticated, invalid and rate-limited calls do not reach pro
   globalThis.fetch=original;
   keys.forEach((k,i)=>{if(old[i]===undefined)delete process.env[k];else process.env[k]=old[i]});
  }
+});
+
+test('logs only bounded diagnostics for upstream failures, leaving public errors unchanged',async t=>{
+ const warning=t.mock.method(Logger.prototype,'warn',(_message:unknown)=>{});
+ const config={apiKey:'fixture-private-key',model:'fixture-model'};
+ const payload=parsePlanInput(input);
+ const providerId='req_0123456789abcdef0123456789abcdef';
+ await assert.rejects(()=>requestCloudStep(payload,config,async()=>new Response('fixture confidential body',{
+  status:401,headers:{'x-request-id':providerId},
+ })),{status:502,message:'Cloud model is unavailable'});
+ await assert.rejects(()=>requestCloudStep(payload,config,async()=>new Response('fixture confidential body',{
+  status:403,headers:{'x-request-id':'untrusted-header-value'},
+ })),{status:502,message:'Cloud model is unavailable'});
+ await assert.rejects(()=>requestCloudStep(payload,config,async()=>{
+  throw new TypeError('fixture confidential message',{cause:{code:'ECONNRESET'}});
+ }),{status:502});
+ await assert.rejects(()=>requestCloudStep(payload,config,async()=>{
+  throw new TypeError('fixture confidential message',{cause:{code:'untrusted-error-code'}});
+ }),{status:502});
+ await assert.rejects(()=>requestCloudStep(payload,config,async()=>{
+  throw new DOMException('fixture confidential timeout','TimeoutError');
+ }),{status:502});
+ await assert.rejects(()=>requestCloudStep(payload,config,async()=>new Response('{}',{headers:{'x-request-id':providerId}})),
+  {status:502,message:'Cloud model did not return a safe step'});
+ assert.deepEqual(warning.mock.calls.map(call=>call.arguments[0]),[
+  'openai_request_failed kind=http status=401 request_id='+providerId,
+  'openai_request_failed kind=http status=403',
+  'openai_request_failed kind=connection code=ECONNRESET',
+  'openai_request_failed kind=connection code=unknown',
+  'openai_request_failed kind=connection code=timeout',
+  'openai_request_failed kind=invalid_response status=200 request_id='+providerId,
+ ]);
 });
