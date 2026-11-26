@@ -68,3 +68,56 @@ test('extension local navigation and scrolling',async()=>{
   await expect(panel.getByRole('status')).toContainText('cancelled');
  }finally{await context.close();await rm(dir,{recursive:true,force:true})}
 });
+
+test('free-form goal chooses next steps from the real browser, and drafts without typing',async()=>{
+ const dir=await mkdtemp(resolve(tmpdir(),'assistant-guided-'));
+ const extension=resolve('apps/extension/.output/chrome-mv3-test');
+ const context=await chromium.launchPersistentContext(dir,{channel:'chromium',headless:process.env.PW_HEADLESS==='1',args:['--disable-extensions-except='+extension,'--load-extension='+extension]});
+ try{
+  const worker=context.serviceWorkers()[0]??await context.waitForEvent('serviceworker');
+  const id=new URL(worker.url()).host;
+  const site=await context.newPage();
+  await site.route('https://example.com/**',route=>route.fulfill({contentType:'text/html',body:`<!doctype html><main>
+   <h1>Apply to the workspace</h1>
+   <p>Scroll down for the application deadline.</p>
+   <div style="height:720px"></div>
+   <p>Applications close on Friday.</p>
+   <label>Full name <input type="text"></label>
+   <label>Password <input type="password" value="fixture-only-never-read"></label>
+   <div style="height:600px"></div>
+  </main>`}));
+  await site.goto('https://example.com/');
+  const panel=await context.newPage();
+  await panel.goto('chrome-extension://'+id+'/sidepanel.html');
+  await panel.evaluate(()=>{
+   Object.defineProperty(globalThis,'LanguageModel',{configurable:true,value:{
+    availability:async()=> 'available',
+    create:async()=>({
+     prompt:async (input:string)=>{
+      const {goal,view,previousSteps}=JSON.parse(input);
+      if(input.includes('fixture-only-never-read')||view.fields.includes('Password'))throw new Error('Sensitive field leaked');
+      if(goal.includes('name'))return JSON.stringify({type:'draft',entries:[{field:view.fields.indexOf('Full name'),value:'Sachin'}]});
+      if(view.text.includes('Applications close on Friday.')){
+       if(previousSteps.length!==1)throw new Error('Expected one prior scroll');
+       return JSON.stringify({type:'finish',answer:'Applications close on Friday.'});
+      }
+      return JSON.stringify({type:'scroll',direction:'down'});
+     },
+     destroy:()=>{},
+    }),
+   }});
+  });
+  const run=async(text:string)=>{
+   await panel.getByRole('textbox',{name:'Command'}).fill(text);
+   await site.bringToFront();
+   await panel.evaluate(()=>document.querySelector('form')?.requestSubmit());
+  };
+  await run('Could you find the deadline further down this page?');
+  await expect(panel.getByRole('status')).toContainText('Applications close on Friday.');
+  expect(await site.evaluate(()=>scrollY)).toBeGreaterThan(0);
+  await run('Could you draft my name as Sachin?');
+  await expect(panel.getByRole('region',{name:'Form draft'})).toContainText('Sachin');
+  await expect(site.getByRole('textbox',{name:'Full name'})).toHaveValue('');
+  await expect(site.getByLabel('Password')).toHaveValue('fixture-only-never-read');
+ }finally{await context.close();await rm(dir,{recursive:true,force:true})}
+});

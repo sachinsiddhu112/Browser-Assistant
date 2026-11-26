@@ -1,12 +1,14 @@
 import {Request,Session,VideoApproval,cancel,terminal} from '../core/session';
 import {routeIntent,allowedNavigation} from '../core/intent';
 import {Action} from '@browser-assistant/shared';
+import {GUIDED_TIMEOUT_MS,GuidedSnapshot,MAX_GUIDED_STEPS,labelDraft} from '../core/guided-contract';
+import {readGuidedViewport,scrollGuidedViewport} from '../core/guided-page';
 export default defineBackground(()=>{
  const key='assistant.session';
  let queue:Promise<unknown>=Promise.resolve();
  function serial<T>(fn:()=>Promise<T>):Promise<T>{const next=queue.then(fn,fn);queue=next.catch(()=>{});return next}
  async function read(){const p=Session.safeParse((await browser.storage.session.get(key))[key]);return p.success?p.data:null}
- async function write(s:Session){await browser.storage.session.set({[key]:s});await browser.tabs.sendMessage(s.tabId,{type:'STATE',session:s}).catch(()=>{});return s}
+ async function write(s:Session){await browser.storage.session.set({[key]:s});await browser.tabs.sendMessage(s.tabId,{type:'STATE',phase:s.phase}).catch(()=>{});return s}
  async function activeTab(){const [t]=await browser.tabs.query({active:true,currentWindow:true});if(t?.id===undefined||!/^https?:/.test(t.url??''))throw new Error('Select a regular website and activate the extension');return t.id}
  async function inject(tabId:number){await browser.scripting.executeScript({target:{tabId},files:['/overlay.js']})}
  async function step<T>(s:Session,fn:()=>Promise<T>):Promise<T>{return serial(async()=>{const c=await read();if(c?.id!==s.id||terminal(c))throw new Error('Task stopped');return fn()})}
@@ -95,7 +97,7 @@ export default defineBackground(()=>{
    await finish(s,'success','Selected YouTube video is playing');
   }catch(e){await finish(s,'error',e instanceof Error?e.message:'Could not open the selected video')}
  }
- void serial(async()=>{const s=await read();if(s&&!terminal(s))await write({...s,phase:'error',message:'Worker restarted; start a new task',videoApproval:undefined})});
+ void serial(async()=>{const s=await read();if(s&&!terminal(s))await write({...s,phase:'error',message:'Worker restarted; start a new task',videoApproval:undefined,guided:undefined,draft:undefined})});
  browser.sidePanel.setPanelBehavior({openPanelOnActionClick:true}).catch(console.error);
  browser.runtime.onMessage.addListener((raw,sender,respond)=>{
   if(sender.id!==browser.runtime.id||sender.url!==browser.runtime.getURL('/sidepanel.html'))return false;
@@ -104,7 +106,53 @@ export default defineBackground(()=>{
    const req=p.data;
    if(req.type==='GET_STATE')return read();
    if(req.type==='STOP'){const s=await read();return s?write(cancel(s)):null}
-   if(req.type==='SHOW_OVERLAY'){const tab=await activeTab();await inject(tab);const s=await read();if(s?.tabId===tab)await browser.tabs.sendMessage(tab,{type:'STATE',session:s}).catch(()=>{});return s}
+   if(req.type==='SHOW_OVERLAY'){const tab=await activeTab();await inject(tab);const s=await read();if(s?.tabId===tab)await browser.tabs.sendMessage(tab,{type:'STATE',phase:s.phase}).catch(()=>{});return s}
+   if(req.type==='START_GUIDED'){
+    const old=await read();
+    if(old&&!terminal(old))throw new Error('Stop the current task first');
+    const tabId=await activeTab();
+    const tab=await browser.tabs.get(tabId);
+    if(!tab.url?.startsWith('https:'))throw new Error('The AI reader is limited to HTTPS pages');
+    const [captured]=await browser.scripting.executeScript({target:{tabId},func:readGuidedViewport});
+    const after=await browser.tabs.get(tabId);
+    if(!captured?.documentId||!after.active||after.url!==tab.url)throw new Error('The page changed while reading it; start again');
+    const snapshot=GuidedSnapshot.parse(captured.result);
+    const {fields,canScrollDown,canScrollUp}=snapshot;
+    const session=await write({id:crypto.randomUUID(),tabId,command:'On-device task',phase:'thinking',message:'Reading this page on your device',
+     guided:{documentId:captured.documentId,url:tab.url,expiresAt:Date.now()+GUIDED_TIMEOUT_MS,steps:0,fields,canScrollDown,canScrollUp}});
+    return {session,snapshot};
+   }
+   if(req.type==='STEP_GUIDED'||req.type==='FAIL_GUIDED'){
+    const s=await read();
+    if(!s||s.id!==req.sessionId||terminal(s)||!s.guided)throw new Error('The on-device task is no longer active');
+    const stop=(message:string)=>write({...s,phase:'error',message,guided:undefined});
+    if(req.type==='FAIL_GUIDED')return stop('The on-device task ended without a result');
+    const g=s.guided;
+    const tab=await browser.tabs.get(s.tabId);
+    if(Date.now()>=g.expiresAt||g.steps>=MAX_GUIDED_STEPS||!tab.active||tab.url!==g.url){
+     await stop('The page, active tab, or time limit changed. Start again.');throw new Error('The page changed or the on-device task expired');
+    }
+    const target={tabId:s.tabId,documentIds:[g.documentId]};
+    const decision=req.decision;
+    if(decision.type==='scroll'){
+     if(!(decision.direction==='down'?g.canScrollDown:g.canScrollUp))throw new Error('There is no more page in that direction');
+     await write({...s,phase:'acting',message:'Scrolling to check the next part of the page',guided:{...g,steps:g.steps+1}});
+     const [changed]=await browser.scripting.executeScript({target,func:scrollGuidedViewport,args:[decision.direction]});
+     if(!changed?.result)throw new Error('Scrolling did not change the page');
+     const [next]=await browser.scripting.executeScript({target,func:readGuidedViewport});
+     const snapshot=GuidedSnapshot.parse(next?.result);
+     const {fields,canScrollUp,canScrollDown}=snapshot;
+     const session=await write({...s,phase:'thinking',message:'Checking the latest view',guided:{...g,steps:g.steps+1,fields,canScrollUp,canScrollDown}});
+     return {session,snapshot};
+    }
+    // Verify the original document still exists before showing a model result.
+    await browser.scripting.executeScript({target,func:()=>true});
+    if(decision.type==='draft'){
+     const draft=labelDraft(g.fields,decision.entries);
+     return write({...s,phase:'success',message:'Draft ready for review. Nothing was entered or submitted.',draft,guided:undefined});
+    }
+    return write({...s,phase:'success',message:decision.type==='ask'?decision.question:decision.answer,guided:undefined});
+   }
    if(req.type==='PLAY_VIDEO'){
     const s=await read();
     const approval=s?.videoApproval;
@@ -122,6 +170,6 @@ export default defineBackground(()=>{
    const old=await read();if(old&&!terminal(old))throw new Error('Stop the current task first');
    const tabId=await activeTab();const s=await write({id:crypto.randomUUID(),tabId,command:req.command,phase:'thinking',message:'Routing local command'});
    setTimeout(()=>{void execute(s).catch(console.error)},0);return s;
-  }).then(session=>respond({ok:true,session}),e=>respond({ok:false,error:e instanceof Error?e.message:'Request failed'}));return true;
+  }).then(result=>respond(result&&'session' in result?{ok:true,...result}:{ok:true,session:result}),e=>respond({ok:false,error:e instanceof Error?e.message:'Request failed'}));return true;
  });
 });
