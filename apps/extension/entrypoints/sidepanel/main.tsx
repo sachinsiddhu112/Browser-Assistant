@@ -6,9 +6,9 @@ import {routeIntent} from '../../core/intent';
 import {GuidedSnapshot} from '../../core/guided-contract';
 import {runGuided} from '../../core/guided-planner';
 import {checkGuidedModel,createGuidedModel,GUIDE_TIMEOUT,type LocalModelAvailability} from '../../core/guided-model';
-import {askCloud,cloudEndpoint,cloudPayload} from '../../core/cloud-client';
+import {askCloud,cloudPayload} from '../../core/cloud-client';
 import './style.css';
-const DEFAULT_PLANNER_ORIGIN='https://browser-assistant-api-production.up.railway.app';
+import {PLANNER_HOST,PLANNER_ORIGIN} from '../../core/cloud-config';
 const QUICK_COMMANDS=['Scroll down','Inspect page','Open YouTube'];
 function Icon({name}:{name:'brand'|'mic'|'arrow'|'shield'|'settings'|'stop'}){
  const paths={
@@ -24,7 +24,7 @@ function Icon({name}:{name:'brand'|'mic'|'arrow'|'shield'|'settings'|'stop'}){
 function App(){
  const [session,setSession]=useState<Session|null>(null),[command,setCommand]=useState(''),[error,setError]=useState(''),[pending,setPending]=useState(false);
  const [preparing,setPreparing]=useState(false),[listening,setListening]=useState(false),[draftNotice,setDraftNotice]=useState('');
- const [origin,setOrigin]=useState(DEFAULT_PLANNER_ORIGIN),[cloudToken,setCloudToken]=useState(''),[cloudReview,setCloudReview]=useState<{id:number;url:string}|null>(null);
+ const [cloudReview,setCloudReview]=useState<{id:number;url:string}|null>(null);
  const [localStatus,setLocalStatus]=useState<LocalModelAvailability|'checking'>('checking');
  const [guiding,setGuiding]=useState(false);
  const guidedAbort=useRef<AbortController|null>(null);
@@ -74,13 +74,9 @@ function App(){
    return r;
   };
   try{
-   let cloudUrl:string|undefined;
    if(approved){
-    if(!/^[-_\w]{32,128}$/.test(cloudToken))throw new Error('Enter a valid private planner access token and run the task again.');
-    const target=cloudEndpoint(origin);
-    if(!await browser.permissions.request({origins:[target.host]}))throw new Error('Chrome did not grant access to the planner host.');
+    if(!await browser.permissions.request({origins:[PLANNER_HOST]}))throw new Error('Chrome did not grant access to the planner host.');
     controller.signal.throwIfAborted();
-    cloudUrl=target.endpoint;
    }else{
     const state=await checkGuidedModel();
     controller.signal.throwIfAborted();
@@ -108,8 +104,8 @@ function App(){
      return r.snapshot===undefined?undefined:GuidedSnapshot.parse(r.snapshot);
     },
     fail:async sessionId=>{await message('FAIL_GUIDED',{sessionId})},
-   }, input=>cloudUrl
-     ?askCloud(cloudUrl,cloudToken,cloudPayload(goal,input.snapshot,input.previous),input.signal)
+   }, input=>approved
+     ?askCloud(cloudPayload(goal,input.snapshot,input.previous),input.signal)
      :ready!.propose(goal,input),controller.signal);
   }catch(e){
    if(controller.signal.reason==='timeout')setError('The guided task timed out. Try a narrower request.');
@@ -139,7 +135,6 @@ function App(){
  },[]);
  const running=!!session&&!terminal(session);
  const busy=pending||running||guiding||preparing||listening;
- const cloudReady=!!origin.trim()&&/^[-_\w]{32,128}$/.test(cloudToken);
  const localLabel=localStatus==='available'?'ready':localStatus==='checking'?'checking…':localStatus==='downloadable'||localStatus==='downloading'?'model not ready yet':'not available';
  const changeCommand=(value:string)=>{setCommand(value);setDraftNotice('');setCloudReview(null);setError('')};
  const phase=guiding&&!running?'thinking':session?.phase??'idle';
@@ -168,10 +163,9 @@ function App(){
   {cloudReview&&<section className="card review" aria-label="Cloud sharing review">
    <div className="section-label"><Icon name="shield"/> Cloud sharing review</div>
    <h2>Use the cloud planner?</h2>
-   <p>Chrome AI isn’t ready. For this task, your command and limited visible excerpts from <strong>{new URL(cloudReview.url).origin}</strong> will go to <strong>{origin.trim()||'the configured planner'}</strong> and its model provider.</p>
+   <p>Chrome AI isn’t ready. For this task, your command and limited visible excerpts from <strong>{new URL(cloudReview.url).origin}</strong> will go to <strong>{PLANNER_ORIGIN}</strong> and its model provider.</p>
    <p className="muted">Use public pages and non-confidential commands only. Form field labels and values are not sent; redaction of visible text is not guaranteed.</p>
-   {!cloudReady&&<p className="muted">Enter a planner access token in Cloud planner settings below.</p>}
-   <button className="primary full" type="button" disabled={busy||!cloudReady} onClick={()=>void run()}>Approve and continue <Icon name="arrow"/></button>
+   <button className="primary full" type="button" disabled={busy} onClick={()=>void run()}>Approve and continue <Icon name="arrow"/></button>
    <button className="quiet full" type="button" onClick={()=>setCloudReview(null)}>Cancel sharing</button>
   </section>}
 
@@ -197,20 +191,6 @@ function App(){
    <h2>Review link</h2><p>{session.review.target.label}</p><p className="target">{session.review.target.url}</p>
    <button className="primary full" type="button" disabled={pending||guiding} onClick={()=>void send('APPROVE_GUIDED',{sessionId:session.id})}>Open this link <Icon name="arrow"/></button>
   </section>}
-
-  <details className="card settings" open={cloudReview&&!cloudReady?true:undefined}>
-   <summary><Icon name="settings"/><span>Cloud planner settings</span><span className="badge">{cloudReady?'Ready':'Private pilot'}</span></summary>
-   <div className="settings-body">
-    <p className="muted">The hosted planner is prefilled. Enter your private pilot token, not your OpenAI key. The token stays in this panel and is cleared when it closes.</p>
-    <label htmlFor="planner-token">Private planner access token</label>
-    <input id="planner-token" value={cloudToken} type="password" autoComplete="off" spellCheck={false} onChange={e=>setCloudToken(e.target.value)} disabled={guiding}/>
-    <details className="advanced">
-     <summary>Advanced connection settings</summary>
-     <label htmlFor="planner-origin">Planner origin</label>
-     <input id="planner-origin" value={origin} type="url" spellCheck={false} autoComplete="off" onChange={e=>setOrigin(e.target.value)} disabled={guiding}/>
-    </details>
-   </div>
-  </details>
 
   <details className="card settings">
    <summary><Icon name="brand"/><span>More tools</span></summary>

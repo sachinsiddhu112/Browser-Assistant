@@ -1,6 +1,11 @@
 import * as assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {Logger} from '@nestjs/common';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import type {IncomingMessage} from 'node:http';
+import {PlannerBudget,plannerClientIp} from './planner-budget';
 import {CloudPlannerController,parseCloudStep,parsePlanInput,requestCloudStep} from './cloud-planner';
 const input={goal:'Find the deadline',text:['The deadline is Monday.'],canScrollUp:false,canScrollDown:true,previousDirections:[]};
 test('drops requests outside the minimised contract',()=>{
@@ -84,4 +89,68 @@ test('logs only bounded diagnostics for upstream failures, leaving public errors
   'openai_request_failed kind=connection code=timeout',
   'openai_request_failed kind=invalid_response status=200 request_id='+providerId,
  ]);
+});
+
+test('10 calls per IP in a rolling minute and the UTC day cap survive reopening',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'browser-budget-'));
+ const path=join(dir,'budget.sqlite');
+ try{
+  const start=Date.UTC(2026,10,26,12);
+  const first=new PlannerBudget(path);
+  try{
+   for(let i=0;i<10;i++)assert.equal(first.take('192.0.2.1',12,start+i),'ok');
+   assert.equal(first.take('192.0.2.1',12,start+59_999),'ip');
+   assert.equal(first.take('192.0.2.2',12,start+59_999),'ok');
+  }finally{first.close()}
+  const second=new PlannerBudget(path);
+  try{
+   assert.equal(second.take('192.0.2.1',12,start+59_999),'ip');
+   assert.equal(second.take('192.0.2.1',12,start+60_000),'ok');
+   assert.equal(second.take('192.0.2.3',12,start+60_000),'daily');
+   assert.equal(second.take('192.0.2.3',12,start+12*60*60_000),'ok');
+  }finally{second.close()}
+ }finally{rmSync(dir,{recursive:true,force:true})}
+});
+
+test('Railway uses the edge client address or fails closed; local ignores forwarded headers',()=>{
+ assert.equal(plannerClientIp({'x-real-ip':'::ffff:192.0.2.1','x-forwarded-for':'203.0.113.7'},'127.0.0.1',true),'192.0.2.1');
+ assert.equal(plannerClientIp({'x-real-ip':'2001:0db8:0:0:0:0:0:1'},undefined,true),'2001:db8::1');
+ assert.equal(plannerClientIp({'x-real-ip':'192.0.2.1, 192.0.2.2'},'127.0.0.1',true),undefined);
+ assert.equal(plannerClientIp({'x-forwarded-for':'192.0.2.1'},'127.0.0.1',true),undefined);
+ assert.equal(plannerClientIp({'x-real-ip':'192.0.2.1'},'127.0.0.1',false),'127.0.0.1');
+});
+
+test('anonymous planner is opt-in and never calls provider without a usable budget',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'browser-budget-controller-'));
+ const keys=['PLANNER_ACCESS_TOKEN','OPENAI_API_KEY','OPENAI_MODEL','PLANNER_PUBLIC_ENABLED','PLANNER_DAILY_CALL_CAP','PLANNER_BUDGET_DIR','RAILWAY_ENVIRONMENT_ID','RAILWAY_VOLUME_MOUNT_PATH'] as const;
+ const old=keys.map(k=>process.env[k]);
+ const original=globalThis.fetch;
+ const ctrl=new CloudPlannerController();
+ let calls=0;
+ globalThis.fetch=async()=>{calls++;return new Response(JSON.stringify({status:'completed',output:[{type:'message',content:[{type:'output_text',text:'{"type":"finish","answer":"Monday"}'}]}]}))};
+ const request=(ip:string)=>({headers:{'x-real-ip':ip},socket:{remoteAddress:ip} as IncomingMessage['socket']});
+ try{
+  for(const k of keys)delete process.env[k];
+  Object.assign(process.env,{OPENAI_API_KEY:'fixture',OPENAI_MODEL:'fixture',PLANNER_ACCESS_TOKEN:'a'.repeat(32)});
+  await assert.rejects(()=>ctrl.next(undefined,input,request('192.0.2.1')),{status:401});
+  process.env.PLANNER_PUBLIC_ENABLED='true';
+  await assert.rejects(()=>ctrl.next(undefined,input,request('192.0.2.1')),{status:503});
+  process.env.PLANNER_DAILY_CALL_CAP='13';
+  process.env.PLANNER_BUDGET_DIR=join(dir,'not-mounted');
+  await assert.rejects(()=>ctrl.next(undefined,input,request('192.0.2.1')),{status:503});
+  assert.equal(calls,0);
+  process.env.PLANNER_BUDGET_DIR=dir;
+  await assert.rejects(()=>ctrl.next(undefined,{...input,extra:true},request('192.0.2.1')),{status:400});
+  for(let i=0;i<10;i++)await ctrl.next(undefined,input,request('192.0.2.1'));
+  await assert.rejects(()=>ctrl.next(undefined,input,request('192.0.2.1')),{status:429,message:'Per-IP limit reached (10 requests per minute)'});
+  for(let i=0;i<3;i++)await ctrl.next(undefined,input,request('192.0.2.2'));
+  await assert.rejects(()=>ctrl.next('Bearer '+process.env.PLANNER_ACCESS_TOKEN,input,request('192.0.2.3')),
+   {status:429,message:'Public planner daily limit reached'});
+  assert.equal(calls,13);
+ }finally{
+  ctrl.onModuleDestroy();
+  globalThis.fetch=original;
+  keys.forEach((k,i)=>{if(old[i]===undefined)delete process.env[k];else process.env[k]=old[i]});
+  rmSync(dir,{recursive:true,force:true});
+ }
 });
