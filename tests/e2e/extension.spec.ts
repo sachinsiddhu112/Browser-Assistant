@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 test('extension local navigation and scrolling',async()=>{
  const dir=await mkdtemp(resolve(tmpdir(),'assistant-'));
  const extension=resolve('apps/extension/.output/chrome-mv3-test');
- const context=await chromium.launchPersistentContext(dir,{channel:'chromium',headless:false,args:['--disable-extensions-except='+extension,'--load-extension='+extension]});
+ const context=await chromium.launchPersistentContext(dir,{channel:'chromium',headless:process.env.PW_HEADLESS==='1',args:['--disable-extensions-except='+extension,'--load-extension='+extension]});
  try{
   const worker=context.serviceWorkers()[0]??await context.waitForEvent('serviceworker');
   const id=new URL(worker.url()).host;
@@ -38,7 +38,33 @@ test('extension local navigation and scrolling',async()=>{
   expect((await send('START',{command:'Go back'})).ok).toBe(true);
   await expect.poll(async()=> (await send('GET_STATE')).session?.phase).toBe('success');
   await expect(site).toHaveURL('https://example.com/');
+  await site.route('https://www.youtube.com/results?*',route=>route.fulfill({contentType:'text/html',body:`<html><body>
+   <ytd-video-renderer><a id="video-title" href="/watch?v=abcdefghijk">First song</a></ytd-video-renderer>
+   <ytd-video-renderer><a id="video-title" href="/watch?v=lmnopqrstuv">Second song</a></ytd-video-renderer>
+   <ytd-video-renderer hidden><a id="video-title" href="/watch?v=zyxwvutsrqp">Hidden song</a></ytd-video-renderer>
+   <ytd-video-renderer><a id="video-title" href="https://attacker.invalid/watch?v=zyxwvutsrqp">Off-site song</a></ytd-video-renderer>
+  </body></html>`}));
+  await site.route('https://www.youtube.com/watch?*',route=>route.fulfill({contentType:'text/html',body:'<html><body><h1>Video fixture</h1></body></html>'}));
+  const started=await send('START',{command:'Play Example on YouTube'});
+  expect(started.ok).toBe(true);
+  await expect.poll(async()=> (await send('GET_STATE')).session?.phase).toBe('waiting-confirmation');
+  await expect(site).toHaveURL('https://www.youtube.com/results?search_query=Example');
+  await expect(panel.getByRole('button',{name:'First song'})).toBeVisible();
+  await expect(panel.getByRole('button',{name:'Second song'})).toBeVisible();
+  await expect(panel.getByRole('button',{name:'Hidden song'})).toHaveCount(0);
+  await expect(panel.getByRole('button',{name:'Off-site song'})).toHaveCount(0);
+  expect((await send('PLAY_VIDEO',{sessionId:started.session.id,videoId:'zyxwvutsrqp'})).ok).toBe(false);
+  await site.bringToFront();
+  expect((await send('PLAY_VIDEO',{sessionId:started.session.id,videoId:'lmnopqrstuv'})).ok).toBe(true);
+  await expect(site).toHaveURL('https://www.youtube.com/watch?v=lmnopqrstuv');
+  await expect.poll(async()=> (await send('GET_STATE')).session?.message,{timeout:15000}).toContain('playback was not verified');
+
+  const stopped=await send('START',{command:'Play Example on YouTube'});
+  await expect.poll(async()=> (await send('GET_STATE')).session?.phase).toBe('waiting-confirmation');
+  expect((await send('STOP')).session.phase).toBe('cancelled');
+  expect((await send('PLAY_VIDEO',{sessionId:stopped.session.id,videoId:'abcdefghijk'})).ok).toBe(false);
+  await expect(site).toHaveURL('https://www.youtube.com/results?search_query=Example');
   await panel.reload();
-  await expect(panel.getByRole('status')).toContainText('success');
+  await expect(panel.getByRole('status')).toContainText('cancelled');
  }finally{await context.close();await rm(dir,{recursive:true,force:true})}
 });

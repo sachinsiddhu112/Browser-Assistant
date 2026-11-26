@@ -1,4 +1,4 @@
-import {Request,Session,cancel,terminal} from '../core/session';
+import {Request,Session,VideoApproval,cancel,terminal} from '../core/session';
 import {routeIntent,allowedNavigation} from '../core/intent';
 import {Action} from '@browser-assistant/shared';
 export default defineBackground(()=>{
@@ -10,9 +10,14 @@ export default defineBackground(()=>{
  async function activeTab(){const [t]=await browser.tabs.query({active:true,currentWindow:true});if(t?.id===undefined||!/^https?:/.test(t.url??''))throw new Error('Select a regular website and activate the extension');return t.id}
  async function inject(tabId:number){await browser.scripting.executeScript({target:{tabId},files:['/overlay.js']})}
  async function step<T>(s:Session,fn:()=>Promise<T>):Promise<T>{return serial(async()=>{const c=await read();if(c?.id!==s.id||terminal(c))throw new Error('Task stopped');return fn()})}
- async function finish(s:Session,phase:'success'|'error',message:string){await serial(async()=>{const c=await read();if(c?.id===s.id&&!terminal(c))await write({...c,phase,message})})}
+ async function finish(s:Session,phase:'success'|'error',message:string){await serial(async()=>{const c=await read();if(c?.id===s.id&&!terminal(c))await write({...c,phase,message,videoApproval:undefined})})}
  async function waitFor<T>(s:Session,fn:()=>Promise<T|undefined>):Promise<T>{for(let i=0;i<40;i++){const r=await step(s,fn);if(r!==undefined)return r;await new Promise(r=>setTimeout(r,250))}throw new Error('Timed out verifying browser state')}
- async function navigate(s:Session,url:string){if(!allowedNavigation(url))throw new Error('Navigation denied');await step(s,()=>browser.tabs.update(s.tabId,{url}));await waitFor(s,async()=>{const t=await browser.tabs.get(s.tabId);return t.status==='complete'&&t.url===url?true:undefined})}
+ async function navigate(s:Session,url:string,expectedSource?:string){
+  if(!allowedNavigation(url))throw new Error('Navigation denied');
+  await step(s,async()=>{
+   if(expectedSource){const t=await browser.tabs.get(s.tabId);if(t.url!==expectedSource||!t.active)throw new Error('Search tab changed before playback')}
+   await browser.tabs.update(s.tabId,{url});
+  });await waitFor(s,async()=>{const t=await browser.tabs.get(s.tabId);return t.status==='complete'&&t.url===url?true:undefined})}
  async function execute(s:Session){
  try{
   const a=routeIntent(s.command);if(!a)throw new Error('Unsupported command; try Open YouTube, Search Google for ..., Play ... on YouTube, or Scroll down');
@@ -21,16 +26,24 @@ export default defineBackground(()=>{
   if(action.type==='navigate'){
    await navigate(s,action.url);
    if(new URL(action.url).pathname==='/results'){
-    const candidate=await waitFor(s,async()=>{
-     const t=await browser.tabs.get(s.tabId);if(t.url!==action.url)throw new Error('Page changed');
+    const choices=await waitFor(s,async()=>{
+     const t=await browser.tabs.get(s.tabId);if(t.url!==action.url||!t.active)throw new Error('Search tab changed');
      const [r]=await browser.scripting.executeScript({target:{tabId:s.tabId},func:()=>{
-      const a=Array.from(document.querySelectorAll<HTMLAnchorElement>('ytd-video-renderer a#video-title[href]')).find(e=>e.getBoundingClientRect().width>0&&e.getBoundingClientRect().height>0);
-      if(!a)return null;const u=new URL(a.href);const v=u.searchParams.get('v');return u.origin==='https://www.youtube.com'&&u.pathname==='/watch'&&v&&/^[\w-]{11}$/.test(v)?'https://www.youtube.com/watch?v='+v:null;
-     }});return r?.result??undefined;
+      if(location.origin!=='https://www.youtube.com'||location.pathname!=='/results')return [];
+      const choices:{id:string;title:string}[]=[];
+      for(const a of document.querySelectorAll<HTMLAnchorElement>('ytd-video-renderer a#video-title[href]')){
+       if(!a.getClientRects().length||getComputedStyle(a).visibility!=='visible'||a.closest('[hidden],[inert],[aria-hidden="true"]'))continue;
+       const u=new URL(a.href),id=u.searchParams.get('v');
+       const title=(a.textContent??'').replace(/\s+/g,' ').trim().slice(0,160);
+       if(u.origin==='https://www.youtube.com'&&u.pathname==='/watch'&&id&&/^[\w-]{11}$/.test(id)&&title&&!choices.some(x=>x.id===id))choices.push({id,title});
+       if(choices.length===4)break;
+      }
+      return choices;
+     }});
+     const choices=r?.result??[];return choices.length?choices:undefined;
     });
-    await navigate(s,candidate);
-    await waitFor(s,async()=>{const t=await browser.tabs.get(s.tabId);if(t.url!==candidate)throw new Error('Page changed');const [r]=await browser.scripting.executeScript({target:{tabId:s.tabId},func:()=>{const v=document.querySelector('video');return !!v&&!v.paused&&v.currentTime>0}});return r?.result?true:undefined});
-    await finish(s,'success','First YouTube result is playing');return;
+    await step(s,async()=>write({...s,phase:'waiting-confirmation',message:'Choose a YouTube result to play.',videoApproval:VideoApproval.parse({sourceUrl:action.url,expiresAt:Date.now()+120_000,choices})}));
+    return;
    }
    await finish(s,'success','Page opened');return;
   }
@@ -67,7 +80,22 @@ export default defineBackground(()=>{
   throw new Error('Unsupported action');
  }catch(e){await finish(s,'error',e instanceof Error?e.message:'Task failed')}
  }
- void serial(async()=>{const s=await read();if(s&&!terminal(s))await write({...s,phase:'error',message:'Worker restarted; start a new task'})});
+ async function playVideo(s:Session,url:string,sourceUrl:string){
+  try{
+   await navigate(s,url,sourceUrl);
+   try{
+    await waitFor(s,async()=>{
+     const t=await browser.tabs.get(s.tabId);if(t.url!==url||!t.active)throw new Error('Video tab changed');
+     const [r]=await browser.scripting.executeScript({target:{tabId:s.tabId},func:()=>{
+      const video=document.querySelector<HTMLVideoElement>('video');
+      return !!video&&!video.paused&&!video.ended&&video.currentTime>0&&!document.querySelector('.html5-video-player.ad-showing');
+     }});return r?.result?true:undefined;
+    });
+   }catch{await finish(s,'success','Opened the selected video, but playback was not verified. Press Play on YouTube if needed.');return}
+   await finish(s,'success','Selected YouTube video is playing');
+  }catch(e){await finish(s,'error',e instanceof Error?e.message:'Could not open the selected video')}
+ }
+ void serial(async()=>{const s=await read();if(s&&!terminal(s))await write({...s,phase:'error',message:'Worker restarted; start a new task',videoApproval:undefined})});
  browser.sidePanel.setPanelBehavior({openPanelOnActionClick:true}).catch(console.error);
  browser.runtime.onMessage.addListener((raw,sender,respond)=>{
   if(sender.id!==browser.runtime.id||sender.url!==browser.runtime.getURL('/sidepanel.html'))return false;
@@ -77,6 +105,20 @@ export default defineBackground(()=>{
    if(req.type==='GET_STATE')return read();
    if(req.type==='STOP'){const s=await read();return s?write(cancel(s)):null}
    if(req.type==='SHOW_OVERLAY'){const tab=await activeTab();await inject(tab);const s=await read();if(s?.tabId===tab)await browser.tabs.sendMessage(tab,{type:'STATE',session:s}).catch(()=>{});return s}
+   if(req.type==='PLAY_VIDEO'){
+    const s=await read();
+    const approval=s?.videoApproval;
+    if(s?.id!==req.sessionId||s.phase!=='waiting-confirmation'||!approval)throw new Error('There is no matching pending choice');
+    const tab=await browser.tabs.get(s.tabId);
+    if(approval.expiresAt<=Date.now()||tab.url!==approval.sourceUrl||!tab.active){
+     return write({...s,videoApproval:undefined,phase:'error',message:'The search changed or the choice expired. Start a new task.'});
+    }
+    if(!approval.choices.some(c=>c.id===req.videoId))throw new Error('That video was not offered for this task');
+    const next=await write({...s,videoApproval:undefined,phase:'acting',message:'Opening the selected video'});
+    const url='https://www.youtube.com/watch?v='+req.videoId;
+    setTimeout(()=>{void playVideo(next,url,approval.sourceUrl).catch(console.error)},0);
+    return next;
+   }
    const old=await read();if(old&&!terminal(old))throw new Error('Stop the current task first');
    const tabId=await activeTab();const s=await write({id:crypto.randomUUID(),tabId,command:req.command,phase:'thinking',message:'Routing local command'});
    setTimeout(()=>{void execute(s).catch(console.error)},0);return s;
