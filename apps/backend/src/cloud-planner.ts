@@ -1,5 +1,7 @@
 import {timingSafeEqual} from 'node:crypto';
-import {Body,Controller,Headers,HttpException,HttpStatus,Post,Header,HttpCode,Logger} from '@nestjs/common';
+import {Body,Controller,Headers,HttpException,HttpStatus,Post,Header,HttpCode,Logger,Req} from '@nestjs/common';
+import type {IncomingMessage} from 'node:http';
+import {PlannerBudget,plannerBudgetConfig,plannerClientIp} from './planner-budget';
 
 type PlanInput={goal:string;text:string[];links?:string[];canScrollUp:boolean;canScrollDown:boolean;previousDirections:('up'|'down')[]};
 type CloudStep={type:'open_link';link:number}|{type:'scroll';direction:'up'|'down'}|{type:'finish';answer:string}|{type:'ask';question:string};
@@ -92,19 +94,50 @@ export async function requestCloudStep(payload:PlanInput,config:{apiKey:string;m
 export class CloudPlannerController{
  private usedAt:number[]=[];
  private inFlight=0;
+ private budget?:PlannerBudget;
+ private budgetFile?:string;
 
  @Post('next')
  @HttpCode(200)
  @Header('Cache-Control','no-store')
- async next(@Headers('authorization') auth:string|undefined,@Body() body:unknown) {
-  const token=process.env.PLANNER_ACCESS_TOKEN,apiKey=process.env.OPENAI_API_KEY,model=process.env.OPENAI_MODEL;
-  if(!token||!/^[-_\w]{32,128}$/.test(token)||!apiKey||!model)throw new HttpException('Cloud planner is not configured',HttpStatus.SERVICE_UNAVAILABLE);
-  if(!bearerMatches(auth,token))throw new HttpException('Invalid planner access token',HttpStatus.UNAUTHORIZED);
+ async next(@Headers('authorization') auth:string|undefined,@Body() body:unknown,
+  @Req() request?:Pick<IncomingMessage,'headers'|'socket'>) {
+  const {OPENAI_API_KEY:apiKey,OPENAI_MODEL:model,PLANNER_ACCESS_TOKEN:token,PLANNER_PUBLIC_ENABLED:enabled}=process.env;
+  if(!apiKey||!model)throw new HttpException('Cloud planner is not configured',HttpStatus.SERVICE_UNAVAILABLE);
+  const anonymous=enabled==='true';
+  if(!anonymous){
+   if(!token||!/^[-_\w]{32,128}$/.test(token))throw new HttpException('Cloud planner is not configured',503);
+   if(!bearerMatches(auth,token))throw new HttpException('Invalid planner access token',401);
+  }
   const data=parsePlanInput(body);
-  const now=Date.now();
-  this.usedAt=this.usedAt.filter(t=>now-t<60_000);
-  if(this.usedAt.length>=12||this.inFlight>=2)throw new HttpException('Planner limit reached; try again shortly',HttpStatus.TOO_MANY_REQUESTS);
-  this.usedAt.push(now);this.inFlight++;
+  if(this.inFlight>=2)throw new HttpException('Planner is busy; try again shortly',429);
+  if(anonymous){
+   const config=plannerBudgetConfig(process.env);
+   if(!config)throw new HttpException('Public planner budget is not configured',503);
+   const ip=plannerClientIp(request?.headers??{},request?.socket.remoteAddress,config.railway);
+   if(!ip)throw new HttpException('Could not determine client IP',400);
+   let outcome:ReturnType<PlannerBudget['take']>;
+   try{
+    if(this.budgetFile!==config.file){
+     this.budget?.close();
+     this.budget=undefined;
+     this.budgetFile=undefined;
+     this.budget=new PlannerBudget(config.file);
+     this.budgetFile=config.file;
+    }
+    if(!this.budget)throw new Error('No budget');
+    outcome=this.budget.take(ip,config.daily);
+   }catch{throw new HttpException('Public planner budget is unavailable',503)}
+   if(outcome==='ip')throw new HttpException('Per-IP limit reached (10 requests per minute)',429);
+   if(outcome==='daily')throw new HttpException('Public planner daily limit reached',429);
+  }else{
+   const now=Date.now();
+   this.usedAt=this.usedAt.filter(t=>now-t<60_000);
+   if(this.usedAt.length>=12)throw new HttpException('Planner limit reached; try again shortly',429);
+   this.usedAt.push(now);
+  }
+  this.inFlight++;
   try{return {decision:await requestCloudStep(data,{apiKey,model})}}finally{this.inFlight--}
  }
+ onModuleDestroy(){this.budget?.close()}
 }

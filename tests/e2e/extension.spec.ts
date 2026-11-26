@@ -170,7 +170,7 @@ test('one Run task button routes to cloud only after review',async({},testInfo)=
    // Stub Chrome's host prompt and the private backend. No real page data or token leaves the fixture.
    globals.chrome.permissions.request=async()=>true;
    globalThis.fetch=async (input,init)=>{
-    globals.fixtureCalls.push({url:String(input),body:JSON.parse(String(init?.body))});
+    globals.fixtureCalls.push({url:String(input),body:JSON.parse(String(init?.body)),authorization:new Headers(init?.headers).get('Authorization')});
     return new Response(JSON.stringify({decision:{type:'finish',answer:'Cloud fixture answer'}}),{headers:{'Content-Type':'application/json'}});
    };
   });
@@ -178,11 +178,7 @@ test('one Run task button routes to cloud only after review',async({},testInfo)=
   await expect(panel.getByRole('heading',{name:'Task result'})).toBeVisible();
   await expect(panel.getByLabel('Planner origin')).toBeHidden();
   await panel.screenshot({path:testInfo.outputPath('side-panel.png'),fullPage:true});
-  await panel.getByText('Cloud planner settings').click();
-  await panel.getByText('Advanced connection settings').click();
-  await expect(panel.getByLabel('Planner origin')).toHaveValue('https://browser-assistant-api-production.up.railway.app');
-  await panel.getByLabel('Planner origin').fill('https://planner.example.net');
-  await panel.getByLabel('Private planner access token').fill('fixture_only_token_000000000000000');
+  await expect(panel.getByLabel('Private planner access token')).toHaveCount(0);
   const command=panel.getByRole('textbox',{name:'Command'});
   await site.bringToFront();
   const submit=()=>panel.evaluate(()=>document.querySelector('form')?.requestSubmit());
@@ -212,7 +208,8 @@ test('one Run task button routes to cloud only after review',async({},testInfo)=
   await expect(panel.getByRole('status')).toContainText('Cloud fixture answer');
   const requests=await calls();
   expect(requests).toHaveLength(1);
-  expect(requests[0].url).toBe('https://planner.example.net/planner/next');
+  expect(requests[0].url).toBe('https://browser-assistant-api-production.up.railway.app/planner/next');
+  expect(requests[0].authorization).toBeNull();
   expect(requests[0].body.goal).toBe('Tell me about the visible fixture.');
   expect(JSON.stringify(requests[0].body)).not.toContain('test-only-private-value');
   expect(JSON.stringify(requests[0].body)).not.toContain('Private fixture label');

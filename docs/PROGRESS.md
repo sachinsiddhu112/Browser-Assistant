@@ -48,3 +48,5 @@ page-data limits. Use only public pages and non-confidential commands for cloud
 tasks. Built-in actions continue to work without a planner.
 
 The side panel groups the command, approvals, result, and pilot settings. The hosted planner origin is prefilled; a custom host is still available in Advanced connection settings. The pilot token is not persisted.
+
+The no-token public preview is gated on server-side limits and persistent storage. See [PUBLIC-CLOUD-PILOT.md](PUBLIC-CLOUD-PILOT.md).
