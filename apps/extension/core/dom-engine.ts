@@ -7,7 +7,7 @@ export function createEngine(){
  function observe(){
   snapshotId=crypto.randomUUID();url=location.href;
   elements=Array.from(document.querySelectorAll<HTMLElement>(selector)).filter(e=>visible(e)&&!sensitive(e)&&!e.matches(':disabled,[aria-disabled="true"]')).slice(0,150);
-  return {snapshotId,url,title:document.title.slice(0,200),elements:elements.map((e,id)=>({id,tag:e.tagName.toLowerCase(),role:e.getAttribute('role')??'',label:(e.getAttribute('aria-label')??e.getAttribute('placeholder')??e.textContent??'').trim().slice(0,160)}))};
+  return {snapshotId,url,title:document.title.slice(0,200),elements:elements.map((e,id)=>({id,tag:e.tagName.toLowerCase(),inputType:e instanceof HTMLInputElement?e.type:undefined,role:e.getAttribute('role')??'',label:(e.getAttribute('aria-label')??e.getAttribute('placeholder')??e.textContent??'').trim().slice(0,160)}))};
  }
  function execute(raw:unknown){
   const a=Action.parse(raw);
@@ -24,7 +24,7 @@ export function createEngine(){
   // Generic clicks are not authorized yet; only a later skill policy may enable them.
   if(a.type==='click')throw new Error('Click requires an authorized skill');
   // Typing is restricted to explicit search inputs; never submit implicitly.
-  if(!(e instanceof HTMLInputElement)||e.type!=='search'||e.form?.method.toLowerCase()==='post')throw new Error('Only search inputs are supported');
+  if(!(e instanceof HTMLInputElement)||e.type!=='search'||e.form?.method.toLowerCase()==='post'||(e.form&&new URL(e.form.action,location.href).origin!==location.origin))throw new Error('Only search inputs are supported');
   const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set;
   if(!setter)throw new Error('Input setter unavailable');
   setter.call(e,a.text);e.dispatchEvent(new Event('input',{bubbles:true}));return {ok:e.value===a.text};

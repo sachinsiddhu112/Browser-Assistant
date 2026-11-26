@@ -44,6 +44,18 @@ export default defineBackground(()=>{
    await step(s,async()=>{const current=await browser.tabs.get(s.tabId);const tabs=(await browser.tabs.query({windowId:current.windowId})).sort((a,b)=>a.index-b.index);const i=tabs.findIndex(t=>t.id===s.tabId);if(i<0||tabs.length<2)throw new Error('No other tab');const target=tabs[(i+(action.direction==='next'?1:tabs.length-1))%tabs.length];if(target.id===undefined)throw new Error('Tab unavailable');const updated=await browser.tabs.update(target.id,{active:true});if(!updated?.active)throw new Error('Tab switch not verified')});
    await finish(s,'success','Switched tab');return;
   }
+  if(action.type==='type'){
+   await step(s,async()=>{
+    await browser.scripting.executeScript({target:{tabId:s.tabId},files:['/executor.js']});
+    const r=await browser.tabs.sendMessage(s.tabId,{type:'OBSERVE_PAGE'});
+    if(!r?.ok||!Array.isArray(r.result?.elements))throw new Error('Observation failed');
+    const candidates=r.result.elements.filter((e:{inputType?:string})=>e.inputType==='search');
+    if(candidates.length!==1)throw new Error('Exactly one visible search input is required');
+    const result=await browser.tabs.sendMessage(s.tabId,{type:'EXECUTE_ACTION',action:{...action,elementId:candidates[0].id,snapshotId:r.result.snapshotId}});
+    if(!result?.ok||!result.result?.ok)throw new Error(result?.error??'Typing not verified');
+   });
+   await finish(s,'success','Search input filled without submitting');return;
+  }
   if(action.type==='observe'){
    const count=await step(s,async()=>{await browser.scripting.executeScript({target:{tabId:s.tabId},files:['/executor.js']});const r=await browser.tabs.sendMessage(s.tabId,{type:'OBSERVE_PAGE'});if(!r?.ok||!Array.isArray(r.result?.elements))throw new Error('Observation failed');return r.result.elements.length});
    await finish(s,'success','Observed '+count+' interactive elements');return;

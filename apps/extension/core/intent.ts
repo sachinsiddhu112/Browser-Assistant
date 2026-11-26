@@ -1,6 +1,9 @@
 import {Action} from '@browser-assistant/shared';
 export function routeIntent(command:string):Action|null{
  const c=command.trim();
+ const type=/^type (.+) into search$/i.exec(c);
+ if(type)return {type:'type',elementId:0,snapshotId:'pending',text:type[1]};
+
  if(/^inspect page$/i.test(c))return {type:'observe'};
  if(/^page down$/i.test(c))return {type:'press_key',key:'PageDown'};
  if(/^page up$/i.test(c))return {type:'press_key',key:'PageUp'};

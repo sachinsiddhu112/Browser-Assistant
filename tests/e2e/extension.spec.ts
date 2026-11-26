@@ -10,7 +10,7 @@ test('extension local navigation and scrolling',async()=>{
   const worker=context.serviceWorkers()[0]??await context.waitForEvent('serviceworker');
   const id=new URL(worker.url()).host;
   const site=await context.newPage();
-  await site.route('https://example.com/**',route=>route.fulfill({contentType:'text/html',body:'<html><body style="height:5000px"><h1>Fixture</h1></body></html>'}));
+  await site.route('https://example.com/**',route=>route.fulfill({contentType:'text/html',body:'<html><body style="height:5000px"><h1>Fixture</h1><input type="search" aria-label="Search"><input type="password" aria-label="Secret"></body></html>'}));
   await site.goto('https://example.com/');
   // Grant fixture-only host access via test manifest; no production permission changes.
   const panel=await context.newPage();
@@ -25,6 +25,12 @@ test('extension local navigation and scrolling',async()=>{
   expect((await send('START',{command:'Scroll down'})).ok).toBe(true);
   await expect.poll(async()=> (await send('GET_STATE')).session?.phase).toBe('success');
   await expect.poll(()=>site.evaluate(()=>scrollY)).toBeGreaterThan(0);
+  expect((await send('START',{command:'Inspect page'})).ok).toBe(true);
+  await expect.poll(async()=> (await send('GET_STATE')).session?.message).toContain('Observed 1 interactive elements');
+  expect((await send('START',{command:'Type NestJS into search'})).ok).toBe(true);
+  await expect.poll(async()=> (await send('GET_STATE')).session?.phase).toBe('success');
+  await expect(site.getByRole('searchbox')).toHaveValue('NestJS');
+  await expect(site.locator('input[type=password]')).toHaveValue('');
   await site.route('https://www.youtube.com/**',route=>route.fulfill({contentType:'text/html',body:'<html><body><h1>YouTube fixture</h1></body></html>'}));
   expect((await send('START',{command:'Open YouTube'})).ok).toBe(true);
   await expect.poll(async()=> (await send('GET_STATE')).session?.phase).toBe('success');
