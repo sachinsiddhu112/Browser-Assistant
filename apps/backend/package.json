@@ -5,7 +5,8 @@
     "dev": "tsx watch src/main.ts",
     "build": "tsc",
     "start": "node dist/main.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsc --outDir .local-cache/test-dist && node --test .local-cache/test-dist/cloud-planner.test.js"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.0",
