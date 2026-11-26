@@ -149,7 +149,7 @@ test('free-form goal chooses next steps from the real browser, and drafts withou
  }finally{await context.close();await rm(dir,{recursive:true,force:true})}
 });
 
-test('one Run task button routes to cloud only after review',async()=>{
+test('one Run task button routes to cloud only after review',async({},testInfo)=>{
  const dir=await mkdtemp(resolve(tmpdir(),'assistant-fallback-'));
  const extension=resolve('apps/extension/.output/chrome-mv3-test');
  const context=await chromium.launchPersistentContext(dir,{channel:'chromium',headless:process.env.PW_HEADLESS==='1',args:['--disable-extensions-except='+extension,'--load-extension='+extension]});
@@ -174,7 +174,13 @@ test('one Run task button routes to cloud only after review',async()=>{
     return new Response(JSON.stringify({decision:{type:'finish',answer:'Cloud fixture answer'}}),{headers:{'Content-Type':'application/json'}});
    };
   });
+  await panel.setViewportSize({width:340,height:900});
+  await expect(panel.getByRole('heading',{name:'Task result'})).toBeVisible();
+  await expect(panel.getByLabel('Planner origin')).toBeHidden();
+  await panel.screenshot({path:testInfo.outputPath('side-panel.png'),fullPage:true});
   await panel.getByText('Cloud planner settings').click();
+  await panel.getByText('Advanced connection settings').click();
+  await expect(panel.getByLabel('Planner origin')).toHaveValue('https://browser-assistant-api-production.up.railway.app');
   await panel.getByLabel('Planner origin').fill('https://planner.example.net');
   await panel.getByLabel('Private planner access token').fill('fixture_only_token_000000000000000');
   const command=panel.getByRole('textbox',{name:'Command'});
@@ -182,7 +188,9 @@ test('one Run task button routes to cloud only after review',async()=>{
   const submit=()=>panel.evaluate(()=>document.querySelector('form')?.requestSubmit());
   const calls=()=>panel.evaluate(()=>(globalThis as any).fixtureCalls);
   const review=panel.getByRole('region',{name:'Cloud sharing review'});
-  await command.fill('Scroll down');
+  await panel.getByRole('button',{name:'Scroll down',exact:true}).evaluate((button:HTMLButtonElement)=>button.click());
+  await expect(command).toHaveValue('Scroll down');
+  await expect(panel.getByRole('status')).toContainText('idle');
   await submit();
   await expect(panel.getByRole('status')).toContainText('success');
   await expect(review).toHaveCount(0);

@@ -20,6 +20,18 @@ a reviewed on-device intent draft and local English dictation when supported.
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for installation and verification.
 
+## Cloud planner diagnostics
+
+For a cloud test that returns HTTP 502, check the API service's Railway
+**Deploy Logs** for `openai_request_failed`. The log includes a fixed failure
+kind and either the upstream HTTP status with a validated request ID (if
+present) or an allowlisted network error label. No headers, response body,
+secrets, model input or page content are logged. Browser-facing errors do not
+change. Tests simulate provider responses; they do not incur API usage.
+
+OpenAI JSON mode uses an explicit system message inside the Responses API
+`input` conversation, with task data in a separate user message. The planner
+still validates the result before sending it to the extension.
 ## Unified Run task (after the reviewed-actions pilot)
 
 The side panel checks Chrome's Prompt API when it opens and again for free-form
@@ -34,3 +46,5 @@ review. A started local task never switches to cloud mid-run.
 Cloud still requires a configured backend and preserves its existing action and
 page-data limits. Use only public pages and non-confidential commands for cloud
 tasks. Built-in actions continue to work without a planner.
+
+The side panel groups the command, approvals, result, and pilot settings. The hosted planner origin is prefilled; a custom host is still available in Advanced connection settings. The pilot token is not persisted.

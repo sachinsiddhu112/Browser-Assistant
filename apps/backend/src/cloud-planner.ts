@@ -1,5 +1,5 @@
 import {timingSafeEqual} from 'node:crypto';
-import {Body,Controller,Headers,HttpException,HttpStatus,Post,Header,HttpCode} from '@nestjs/common';
+import {Body,Controller,Headers,HttpException,HttpStatus,Post,Header,HttpCode,Logger} from '@nestjs/common';
 
 type PlanInput={goal:string;text:string[];links?:string[];canScrollUp:boolean;canScrollDown:boolean;previousDirections:('up'|'down')[]};
 type CloudStep={type:'open_link';link:number}|{type:'scroll';direction:'up'|'down'}|{type:'finish';answer:string}|{type:'ask';question:string};
@@ -37,23 +37,55 @@ const instructions=[
  'No other clicks, URLs, arbitrary scripts, typing, form drafts, uploads or submissions. No guessing unseen page content.',
 ].join('\n');
 
+const providerLog=new Logger('CloudPlanner');
+const networkCodes=new Set([
+ 'ENOTFOUND','EAI_AGAIN','ECONNREFUSED','ECONNRESET','ENETUNREACH','EHOSTUNREACH',
+ 'ETIMEDOUT','UND_ERR_CONNECT_TIMEOUT','UND_ERR_HEADERS_TIMEOUT','UND_ERR_BODY_TIMEOUT',
+ 'UND_ERR_SOCKET','CERT_HAS_EXPIRED','UNABLE_TO_VERIFY_LEAF_SIGNATURE','ERR_TLS_CERT_ALTNAME_INVALID',
+]);
+function networkReason(error:unknown):string{
+ if(!(error instanceof Error))return 'unknown';
+ if(error.name==='TimeoutError')return 'timeout';
+ if(error.name==='AbortError')return 'aborted';
+ const cause=error.cause as {code?:unknown}|undefined;
+ return typeof cause?.code==='string'&&networkCodes.has(cause.code)?cause.code:'unknown';
+}
+function logProviderResponse(kind:'http'|'invalid_response',response:Response){
+ const requestId=response.headers.get('x-request-id');
+ // Only accept the provider request ID shape; never log arbitrary header values.
+ const identity=requestId&&/^req_[a-f0-9]{16,64}$/.test(requestId)?' request_id='+requestId:'';
+ providerLog.warn('openai_request_failed kind='+kind+' status='+response.status+identity);
+}
+
 export async function requestCloudStep(payload:PlanInput,config:{apiKey:string;model:string},send:typeof fetch=fetch){
  let response:Response;
  try{
   response=await send('https://api.openai.com/v1/responses',{
    method:'POST',redirect:'error',signal:AbortSignal.timeout(10_000),
    headers:{Authorization:'Bearer '+config.apiKey,'Content-Type':'application/json'},
-   body:JSON.stringify({model:config.model,store:false,instructions,input:JSON.stringify(payload),max_output_tokens:400,text:{format:{type:'json_object'}}}),
+   body:JSON.stringify({model:config.model,store:false,input:[
+    {role:'system',content:instructions},
+    {role:'user',content:'Task context (JSON):\n'+JSON.stringify(payload)},
+   ],max_output_tokens:400,text:{format:{type:'json_object'}}}),
   });
- }catch{throw new HttpException('Cloud model is unavailable',502)}
- if(!response.ok)throw new HttpException('Cloud model is unavailable',502);
+ }catch(error){
+  providerLog.warn('openai_request_failed kind=connection code='+networkReason(error));
+  throw new HttpException('Cloud model is unavailable',502);
+ }
+ if(!response.ok){
+  logProviderResponse('http',response);
+  throw new HttpException('Cloud model is unavailable',502);
+ }
  try{
   const data=await response.json() as {status?:string;output?:{type?:string;content?:{type?:string;text?:string}[]}[]};
   if(data.status!=='completed')throw new Error();
   const text=data.output?.filter(x=>x.type==='message').flatMap(x=>x.content??[]).find(x=>x.type==='output_text')?.text;
   if(!bounded(text,3000))throw new Error();
   return parseCloudStep(JSON.parse(text));
- }catch{throw new HttpException('Cloud model did not return a safe step',502)}
+ }catch{
+  logProviderResponse('invalid_response',response);
+  throw new HttpException('Cloud model did not return a safe step',502);
+ }
 }
 
 @Controller('planner')

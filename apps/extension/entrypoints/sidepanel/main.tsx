@@ -8,10 +8,23 @@ import {runGuided} from '../../core/guided-planner';
 import {checkGuidedModel,createGuidedModel,GUIDE_TIMEOUT,type LocalModelAvailability} from '../../core/guided-model';
 import {askCloud,cloudEndpoint,cloudPayload} from '../../core/cloud-client';
 import './style.css';
+const DEFAULT_PLANNER_ORIGIN='https://browser-assistant-api-production.up.railway.app';
+const QUICK_COMMANDS=['Scroll down','Inspect page','Open YouTube'];
+function Icon({name}:{name:'brand'|'mic'|'arrow'|'shield'|'settings'|'stop'}){
+ const paths={
+  brand:<><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18M11 9v11m4-6 2 2-2 2"/></>,
+  mic:<><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11v1a7 7 0 0 0 14 0v-1m-7 8v3"/></>,
+  arrow:<path d="M4 12h15m-6-6 6 6-6 6"/>,
+  shield:<path d="M12 22s7-3 7-10V5l-7-3-7 3v7c0 7 7 10 7 10zm-3-10 2 2 4-4"/>,
+  settings:<><path d="M4 7h16M4 17h16"/><circle cx="8" cy="7" r="2" fill="currentColor"/><circle cx="16" cy="17" r="2" fill="currentColor"/></>,
+  stop:<rect x="6" y="6" width="12" height="12" rx="2"/>,
+ };
+ return <svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
+}
 function App(){
  const [session,setSession]=useState<Session|null>(null),[command,setCommand]=useState(''),[error,setError]=useState(''),[pending,setPending]=useState(false);
  const [preparing,setPreparing]=useState(false),[listening,setListening]=useState(false),[draftNotice,setDraftNotice]=useState('');
- const [origin,setOrigin]=useState(''),[cloudToken,setCloudToken]=useState(''),[cloudReview,setCloudReview]=useState<{id:number;url:string}|null>(null);
+ const [origin,setOrigin]=useState(DEFAULT_PLANNER_ORIGIN),[cloudToken,setCloudToken]=useState(''),[cloudReview,setCloudReview]=useState<{id:number;url:string}|null>(null);
  const [localStatus,setLocalStatus]=useState<LocalModelAvailability|'checking'>('checking');
  const [guiding,setGuiding]=useState(false);
  const guidedAbort=useRef<AbortController|null>(null);
@@ -126,29 +139,87 @@ function App(){
  },[]);
  const running=!!session&&!terminal(session);
  const busy=pending||running||guiding||preparing||listening;
- return <main><h1>Browser Assistant</h1><p>Browser skills with local AI and optional cloud fallback</p>
- <p aria-label="Chrome AI availability">Chrome AI: {localStatus==='available'?'ready':localStatus==='checking'?'checking…':localStatus==='downloadable'||localStatus==='downloading'?'model not ready yet':'not available'}</p>
- <button disabled={pending} onClick={()=>void send('SHOW_OVERLAY')}>Show assistant on page</button>
- <form noValidate onSubmit={e=>{e.preventDefault();if(!cloudReview)void run()}}>
-  <label htmlFor="command">Command</label><textarea id="command" maxLength={1000} value={command} disabled={preparing||listening||guiding} onChange={e=>{setCommand(e.target.value);setDraftNotice('');setCloudReview(null)}}/>
-  <details open={cloudReview?true:undefined}><summary>Cloud planner settings</summary>
-   <label htmlFor="planner-origin">Planner origin</label><input id="planner-origin" value={origin} type="url" onChange={e=>setOrigin(e.target.value)} disabled={guiding}/>
-   <label htmlFor="planner-token">Private planner access token</label><input id="planner-token" value={cloudToken} type="password" autoComplete="off" onChange={e=>setCloudToken(e.target.value)} disabled={guiding}/>
-  </details>
-  {cloudReview&&<section aria-label="Cloud sharing review">
-   <p>Chrome AI isn’t ready for this task. You can use the cloud planner instead.</p>
-   <p>Continuing sends your command and limited visible excerpts from <strong>{new URL(cloudReview.url).origin}</strong> to <strong>{origin.trim()||"the configured planner"}</strong> and its model provider for this task only. Common sensitive patterns are masked, but redaction is not guaranteed. Continue only on a public page with a non-confidential command. Input-control labels and values aren’t sent.</p>
-   {(!origin.trim()||!/^[-_\w]{32,128}$/.test(cloudToken))&&<p>Set the planner origin and a valid private access token above to continue.</p>}
-   <button type="button" onClick={()=>setCloudReview(null)}>Cancel sharing</button>
+ const cloudReady=!!origin.trim()&&/^[-_\w]{32,128}$/.test(cloudToken);
+ const localLabel=localStatus==='available'?'ready':localStatus==='checking'?'checking…':localStatus==='downloadable'||localStatus==='downloading'?'model not ready yet':'not available';
+ const changeCommand=(value:string)=>{setCommand(value);setDraftNotice('');setCloudReview(null);setError('')};
+ const phase=guiding&&!running?'thinking':session?.phase??'idle';
+ const result=guiding&&!running?'Preparing the task…':session?.message??'Your result will appear here.';
+ return <main className="panel">
+  <header className="hero">
+   <div className="brand-row"><span className="mark"><Icon name="brand"/></span><span className="eyebrow">CHROME EXTENSION</span></div>
+   <h1>Browser Assistant</h1>
+   <p>Read and navigate the page you’re on.</p>
+   <p className="model-pill" data-ready={localStatus==='available'} aria-label="Chrome AI availability"><span/>Chrome AI: {localLabel}</p>
+  </header>
+
+  <form className="composer card" noValidate onSubmit={e=>{e.preventDefault();if(!cloudReview)void run()}}>
+   <label htmlFor="command">Command</label>
+   <textarea id="command" maxLength={1000} placeholder="What would you like to do on this page?" value={command} disabled={preparing||listening||guiding} onChange={e=>changeCommand(e.target.value)}/>
+   <div className="examples" aria-label="Example commands">
+    {QUICK_COMMANDS.map(label=><button className="chip" key={label} type="button" disabled={busy} onClick={()=>changeCommand(label)}>{label}</button>)}
+   </div>
+   <div className="composer-actions">
+    {!cloudReview&&<button className="primary" type="submit" disabled={busy||!command.trim()}>Run task <Icon name="arrow"/></button>}
+    <button className="secondary mic" type="button" disabled={pending||running||guiding||preparing} onClick={()=>void dictate()} title={listening?'Stop listening':'Dictate locally (English)'} aria-label={listening?'Stop listening':'Dictate locally (English)'}><Icon name="mic"/>{listening?'Stop listening':'Dictate'}</button>
+   </div>
+   {draftNotice&&<p className="muted helper">{draftNotice}</p>}
+  </form>
+
+  {cloudReview&&<section className="card review" aria-label="Cloud sharing review">
+   <div className="section-label"><Icon name="shield"/> Cloud sharing review</div>
+   <h2>Use the cloud planner?</h2>
+   <p>Chrome AI isn’t ready. For this task, your command and limited visible excerpts from <strong>{new URL(cloudReview.url).origin}</strong> will go to <strong>{origin.trim()||'the configured planner'}</strong> and its model provider.</p>
+   <p className="muted">Use public pages and non-confidential commands only. Form field labels and values are not sent; redaction of visible text is not guaranteed.</p>
+   {!cloudReady&&<p className="muted">Enter a planner access token in Cloud planner settings below.</p>}
+   <button className="primary full" type="button" disabled={busy||!cloudReady} onClick={()=>void run()}>Approve and continue <Icon name="arrow"/></button>
+   <button className="quiet full" type="button" onClick={()=>setCloudReview(null)}>Cancel sharing</button>
   </section>}
-  <button type={cloudReview?'button':'submit'} onClick={cloudReview?()=>void run():undefined} disabled={busy||!command.trim()||!!cloudReview&&(!origin.trim()||!/^[-_\w]{32,128}$/.test(cloudToken))}>{cloudReview?'Approve and continue':'Run task'}</button>
- </form>
- <button type="button" disabled={busy||!command.trim()} onClick={()=>void prepare()}>{preparing?'Preparing…':'Suggest supported command on device'}</button>
- <button type="button" disabled={pending||running||guiding||preparing} onClick={()=>void dictate()}>{listening?'Stop listening':'Dictate locally (English)'}</button>{draftNotice&&<p>{draftNotice}</p>}
- <button disabled={!running&&!guiding} onClick={stop}>Stop task</button>{session?.phase==='waiting-confirmation'&&session.videoApproval&&<section aria-label="YouTube choices"><p>Choose a result from YouTube:</p><ul>{session.videoApproval.choices.map(choice=><li key={choice.id}><button type="button" disabled={pending} onClick={()=>void send('PLAY_VIDEO',{sessionId:session.id,videoId:choice.id})}>{choice.title}</button></li>)}</ul></section>}{session?.draft&&<section aria-label="Form draft"><dl>{session.draft.map((field,i)=><React.Fragment key={i}><dt>{field.label}</dt><dd>{field.value}</dd></React.Fragment>)}</dl><p>The site can react to entered text immediately. Review every value. Upload files and submit on the website yourself.</p>
-  <button disabled={pending||guiding} onClick={()=>void send('APPROVE_GUIDED',{sessionId:session.id})}>Fill these fields</button></section>}
- {session?.review?.type==='link'&&<section aria-label="Link review"><p>{session.review.target.label}</p><p>{session.review.target.url}</p>
-  <button disabled={pending||guiding} onClick={()=>void send('APPROVE_GUIDED',{sessionId:session.id})}>Open this link</button></section>}
- <p role="status">{session?.phase??'idle'}: {session?.message??'Ready'}</p>{error&&<p role="alert">{error}</p>}<small>Try Open YouTube, Search Google for NestJS, Play Kesariya on YouTube, Scroll down, Go back, Next tab, Inspect page, Page down, or Type NestJS into search. For other requests, Run tries Chrome AI first and offers cloud planning only if Chrome AI isn’t ready. Nothing is shared with the planner until you approve. Local mode can fill reviewed text fields; neither mode uploads files or submits forms.</small></main>;
+
+  <section className="card result" aria-labelledby="result-title">
+   <div className="result-head"><h2 id="result-title">Task result</h2>
+    {(running||guiding)&&<button className="quiet stop" type="button" onClick={stop}><Icon name="stop"/>Stop task</button>}
+   </div>
+   <div className="result-status" role="status"><span className="phase" data-phase={phase}>{phase}</span><p>{result}</p></div>
+   {error&&<p className="error" role="alert">{error}</p>}
+  </section>
+
+  {session?.phase==='waiting-confirmation'&&session.videoApproval&&<section className="card review" aria-label="YouTube choices">
+   <h2>Choose a YouTube result</h2>
+   <ul className="choice-list">{session.videoApproval.choices.map(choice=><li key={choice.id}><button className="secondary full" type="button" disabled={pending} onClick={()=>void send('PLAY_VIDEO',{sessionId:session.id,videoId:choice.id})}>{choice.title}</button></li>)}</ul>
+  </section>}
+  {session?.draft&&<section className="card review" aria-label="Form draft">
+   <h2>Review form draft</h2>
+   <dl>{session.draft.map((field,i)=><React.Fragment key={i}><dt>{field.label}</dt><dd>{field.value}</dd></React.Fragment>)}</dl>
+   <p className="muted">The site can react to entered text immediately. Review every value. Upload files and submit on the website yourself.</p>
+   <button className="primary full" type="button" disabled={pending||guiding} onClick={()=>void send('APPROVE_GUIDED',{sessionId:session.id})}>Fill these fields</button>
+  </section>}
+  {session?.review?.type==='link'&&<section className="card review" aria-label="Link review">
+   <h2>Review link</h2><p>{session.review.target.label}</p><p className="target">{session.review.target.url}</p>
+   <button className="primary full" type="button" disabled={pending||guiding} onClick={()=>void send('APPROVE_GUIDED',{sessionId:session.id})}>Open this link <Icon name="arrow"/></button>
+  </section>}
+
+  <details className="card settings" open={cloudReview&&!cloudReady?true:undefined}>
+   <summary><Icon name="settings"/><span>Cloud planner settings</span><span className="badge">{cloudReady?'Ready':'Private pilot'}</span></summary>
+   <div className="settings-body">
+    <p className="muted">The hosted planner is prefilled. Enter your private pilot token, not your OpenAI key. The token stays in this panel and is cleared when it closes.</p>
+    <label htmlFor="planner-token">Private planner access token</label>
+    <input id="planner-token" value={cloudToken} type="password" autoComplete="off" spellCheck={false} onChange={e=>setCloudToken(e.target.value)} disabled={guiding}/>
+    <details className="advanced">
+     <summary>Advanced connection settings</summary>
+     <label htmlFor="planner-origin">Planner origin</label>
+     <input id="planner-origin" value={origin} type="url" spellCheck={false} autoComplete="off" onChange={e=>setOrigin(e.target.value)} disabled={guiding}/>
+    </details>
+   </div>
+  </details>
+
+  <details className="card settings">
+   <summary><Icon name="brand"/><span>More tools</span></summary>
+   <div className="settings-body tool-stack">
+    <button className="secondary" type="button" disabled={pending} onClick={()=>void send('SHOW_OVERLAY')}>Show assistant on page</button>
+    <button className="secondary" type="button" disabled={busy||!command.trim()} onClick={()=>void prepare()}>{preparing?'Preparing…':'Suggest supported command on device'}</button>
+   </div>
+  </details>
+  <footer><Icon name="shield"/><span>Local-first. You approve any cloud sharing and reviewed actions.</span></footer>
+ </main>;
 }
 createRoot(document.getElementById('root')!).render(<App/>);
