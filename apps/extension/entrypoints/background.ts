@@ -1,7 +1,7 @@
 import {Request,Session,VideoApproval,cancel,terminal} from '../core/session';
 import {routeIntent,allowedNavigation} from '../core/intent';
 import {Action} from '@browser-assistant/shared';
-import {GUIDED_TIMEOUT_MS,GuidedSnapshot,MAX_GUIDED_STEPS,labelDraft} from '../core/guided-contract';
+import {GUIDED_TIMEOUT_MS,splitCapture,MAX_GUIDED_STEPS,labelDraft} from '../core/guided-contract';
 import {readGuidedViewport,scrollGuidedViewport} from '../core/guided-page';
 export default defineBackground(()=>{
  const key='assistant.session';
@@ -97,7 +97,13 @@ export default defineBackground(()=>{
    await finish(s,'success','Selected YouTube video is playing');
   }catch(e){await finish(s,'error',e instanceof Error?e.message:'Could not open the selected video')}
  }
- void serial(async()=>{const s=await read();if(s&&!terminal(s))await write({...s,phase:'error',message:'Worker restarted; start a new task',videoApproval:undefined,guided:undefined,draft:undefined})});
+ async function verifyReviewedLink(s:Session,url:string){
+  try{
+   await waitFor(s,async()=>{const t=await browser.tabs.get(s.tabId);return t.status==='complete'&&t.url===url?true:undefined});
+   await finish(s,'success','Opened the reviewed link. You can run another task on this page.');
+  }catch{await finish(s,'error','Could not verify the exact destination. Check the tab before continuing.')}
+ }
+ void serial(async()=>{const s=await read();if(s&&!terminal(s))await write({...s,phase:'error',message:'Worker restarted; start a new task',videoApproval:undefined,guided:undefined,draft:undefined,review:undefined})});
  browser.sidePanel.setPanelBehavior({openPanelOnActionClick:true}).catch(console.error);
  browser.runtime.onMessage.addListener((raw,sender,respond)=>{
   if(sender.id!==browser.runtime.id||sender.url!==browser.runtime.getURL('/sidepanel.html'))return false;
@@ -116,15 +122,42 @@ export default defineBackground(()=>{
     const [captured]=await browser.scripting.executeScript({target:{tabId},func:readGuidedViewport});
     const after=await browser.tabs.get(tabId);
     if(!captured?.documentId||!after.active||after.url!==tab.url)throw new Error('The page changed while reading it; start again');
-    const snapshot=GuidedSnapshot.parse(captured.result);
-    const {fields,canScrollDown,canScrollUp}=snapshot;
+    const {snapshot,fields,links}=splitCapture(captured.result);
+    const {canScrollDown,canScrollUp}=snapshot;
     const session=await write({id:crypto.randomUUID(),tabId,command:'On-device task',phase:'thinking',message:'Reading this page on your device',
-     guided:{documentId:captured.documentId,url:tab.url,expiresAt:Date.now()+GUIDED_TIMEOUT_MS,steps:0,fields,canScrollDown,canScrollUp}});
+     guided:{documentId:captured.documentId,url:tab.url,expiresAt:Date.now()+GUIDED_TIMEOUT_MS,steps:0,fields,links,mode:req.mode,canScrollDown,canScrollUp}});
     return {session,snapshot};
+   }
+   if(req.type==='APPROVE_GUIDED'){
+    const s=await read();
+    if(!s||s.id!==req.sessionId||s.phase!=='waiting-confirmation'||!s.guided||!s.review)throw new Error('No matching action to approve');
+    const {review,guided:g}=s;
+    const clear={guided:undefined,review:undefined,draft:undefined};
+    const failure=(message:string)=>write({...s,...clear,phase:'error',message});
+    try{
+     const t=await browser.tabs.get(s.tabId);
+     if(!t.active||t.url!==g.url||Date.now()>=g.expiresAt)return failure('The page or review expired. Start again.');
+     const target={tabId:s.tabId,documentIds:[g.documentId]};
+     if(review.type==='fill'){
+      if(g.mode!=='local')return failure('Cloud mode cannot enter form data');
+      const [r]=await browser.scripting.executeScript({target,func:readGuidedViewport,args:[{type:'fill',items:review.items}]});
+      const count=r?.result?.kind==='filled'?r.result.count:0;
+      if(count!==review.items.length)return failure('Verified '+count+' of '+review.items.length+' fields. Check the page before continuing; nothing was submitted by the extension.');
+      return write({...s,...clear,phase:'success',message:'Filled '+count+' reviewed fields. You control file uploads and submission on the website.'});
+     }
+     const [r]=await browser.scripting.executeScript({target,func:readGuidedViewport,args:[{type:'link',...review.target}]});
+     if(r?.result?.kind!=='link'||r.result.url!==review.target.url)return failure('The reviewed link is no longer available.');
+     const latest=await browser.tabs.get(s.tabId);
+     if(!latest.active||latest.url!==g.url)return failure('The active page changed before opening the link.');
+     const next=await write({...s,...clear,phase:'acting',message:'Opening the reviewed link'});
+     await browser.tabs.update(s.tabId,{url:review.target.url});
+     setTimeout(()=>{void verifyReviewedLink(next,review.target.url).catch(console.error)},0);
+     return next;
+    }catch{return failure('The reviewed action could not be verified. Check the page before retrying.')}
    }
    if(req.type==='STEP_GUIDED'||req.type==='FAIL_GUIDED'){
     const s=await read();
-    if(!s||s.id!==req.sessionId||terminal(s)||!s.guided)throw new Error('The on-device task is no longer active');
+    if(!s||s.id!==req.sessionId||terminal(s)||s.phase==='waiting-confirmation'||!s.guided)throw new Error('The on-device task is no longer active');
     const stop=(message:string)=>write({...s,phase:'error',message,guided:undefined});
     if(req.type==='FAIL_GUIDED')return stop('The on-device task ended without a result');
     const g=s.guided;
@@ -140,16 +173,25 @@ export default defineBackground(()=>{
      const [changed]=await browser.scripting.executeScript({target,func:scrollGuidedViewport,args:[decision.direction]});
      if(!changed?.result)throw new Error('Scrolling did not change the page');
      const [next]=await browser.scripting.executeScript({target,func:readGuidedViewport});
-     const snapshot=GuidedSnapshot.parse(next?.result);
-     const {fields,canScrollUp,canScrollDown}=snapshot;
-     const session=await write({...s,phase:'thinking',message:'Checking the latest view',guided:{...g,steps:g.steps+1,fields,canScrollUp,canScrollDown}});
+     const {snapshot,fields,links}=splitCapture(next?.result);
+     const {canScrollUp,canScrollDown}=snapshot;
+     const session=await write({...s,phase:'thinking',message:'Checking the latest view',guided:{...g,steps:g.steps+1,fields,links,canScrollUp,canScrollDown}});
      return {session,snapshot};
     }
     // Verify the original document still exists before showing a model result.
     await browser.scripting.executeScript({target,func:()=>true});
     if(decision.type==='draft'){
-     const draft=labelDraft(g.fields,decision.entries);
-     return write({...s,phase:'success',message:'Draft ready for review. Nothing was entered or submitted.',draft,guided:undefined});
+     if(g.mode!=='local')throw new Error('Only local mode can propose form fields');
+     const draft=labelDraft(g.fields.map(f=>f.label),decision.entries);
+     const items=decision.entries.map((entry,i)=>({...g.fields[entry.field],value:draft[i].value}));
+     return write({...s,phase:'waiting-confirmation',message:'Draft ready. Nothing was entered or submitted.',draft,
+      guided:{...g,expiresAt:Date.now()+90_000},review:{type:'fill',items}});
+    }
+    if(decision.type==='open_link'){
+     const link=g.links[decision.link];
+     if(!link)throw new Error('The model did not select a visible link');
+     return write({...s,phase:'waiting-confirmation',message:'Review the destination before opening it.',
+      guided:{...g,expiresAt:Date.now()+90_000},review:{type:'link',target:link}});
     }
     return write({...s,phase:'success',message:decision.type==='ask'?decision.question:decision.answer,guided:undefined});
    }

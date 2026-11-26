@@ -7,6 +7,9 @@ test('drops requests outside the minimised contract',()=>{
  assert.deepEqual(parsePlanInput(input),input);
  assert.throws(()=>parsePlanInput({...input,fields:['password']}));
  assert.throws(()=>parseCloudStep({type:'click',selector:'#submit'}));
+ assert.deepEqual(parseCloudStep({type:'open_link',link:0}),{type:'open_link',link:0});
+ assert.throws(()=>parseCloudStep({type:'open_link',link:0,url:'https://example.com'}));
+ assert.deepEqual(parsePlanInput({...input,links:['Role details']}).links,['Role details']);
 });
 test('provider request is fixed, disables storage, and returns a validated proposal',async()=>{
  const send:typeof fetch=async (href,options)=>{

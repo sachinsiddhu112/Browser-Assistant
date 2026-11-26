@@ -66,7 +66,7 @@ function App(){
    const ready=model;
    await runGuided({
     begin:async()=>{
-     const r=await message('START_GUIDED');
+     const r=await message('START_GUIDED',{mode:useCloud?'cloud':'local'});
      return {sessionId:Session.parse(r.session).id,snapshot:GuidedSnapshot.parse(r.snapshot)};
     },
     step:async(sessionId,decision)=>{
@@ -99,6 +99,10 @@ function App(){
   <label htmlFor="planner-token">Private planner access token</label><input id="planner-token" value={cloudToken} type="password" autoComplete="off" onChange={e=>{setCloudToken(e.target.value);setCloudConsent(false)}} disabled={guiding}/>
   <label><input type="checkbox" checked={cloudConsent} onChange={e=>setCloudConsent(e.target.checked)} disabled={guiding}/> Share the command and page excerpts for this task</label>
   <button type="button" disabled={!cloudConsent||!origin||!cloudToken||!command.trim()||guiding||pending||running||preparing||listening} onClick={()=>void run(true)}>Run with cloud</button>
- </details><button disabled={!running&&!guiding} onClick={stop}>Stop task</button>{session?.phase==='waiting-confirmation'&&session.videoApproval&&<section aria-label="YouTube choices"><p>Choose a result from YouTube:</p><ul>{session.videoApproval.choices.map(choice=><li key={choice.id}><button type="button" disabled={pending} onClick={()=>void send('PLAY_VIDEO',{sessionId:session.id,videoId:choice.id})}>{choice.title}</button></li>)}</ul></section>}{session?.draft&&<section aria-label="Form draft"><dl>{session.draft.map((field,i)=><React.Fragment key={i}><dt>{field.label}</dt><dd>{field.value}</dd></React.Fragment>)}</dl></section>}<p role="status">{session?.phase??'idle'}: {session?.message??'Ready'}</p>{error&&<p role="alert">{error}</p>}<small>Try Open YouTube, Search Google for NestJS, Play Kesariya on YouTube, Scroll down, Go back, Next tab, Inspect page, Page down, or Type NestJS into search. For other requests, Run uses Chrome’s on-device model to read visible page text, scroll, or draft answers. Local Run does not send the page to a server. Neither mode enters or submits forms.</small></main>;
+ </details><button disabled={!running&&!guiding} onClick={stop}>Stop task</button>{session?.phase==='waiting-confirmation'&&session.videoApproval&&<section aria-label="YouTube choices"><p>Choose a result from YouTube:</p><ul>{session.videoApproval.choices.map(choice=><li key={choice.id}><button type="button" disabled={pending} onClick={()=>void send('PLAY_VIDEO',{sessionId:session.id,videoId:choice.id})}>{choice.title}</button></li>)}</ul></section>}{session?.draft&&<section aria-label="Form draft"><dl>{session.draft.map((field,i)=><React.Fragment key={i}><dt>{field.label}</dt><dd>{field.value}</dd></React.Fragment>)}</dl><p>The site can react to entered text immediately. Review every value. Upload files and submit on the website yourself.</p>
+  <button disabled={pending||guiding} onClick={()=>void send('APPROVE_GUIDED',{sessionId:session.id})}>Fill these fields</button></section>}
+ {session?.review?.type==='link'&&<section aria-label="Link review"><p>{session.review.target.label}</p><p>{session.review.target.url}</p>
+  <button disabled={pending||guiding} onClick={()=>void send('APPROVE_GUIDED',{sessionId:session.id})}>Open this link</button></section>}
+ <p role="status">{session?.phase??'idle'}: {session?.message??'Ready'}</p>{error&&<p role="alert">{error}</p>}<small>Try Open YouTube, Search Google for NestJS, Play Kesariya on YouTube, Scroll down, Go back, Next tab, Inspect page, Page down, or Type NestJS into search. For other requests, Run uses Chrome’s on-device model to read visible page text, scroll, or draft answers. Local Run does not send the page to a server. Local mode can fill reviewed text fields; neither mode uploads files or submits forms.</small></main>;
 }
 createRoot(document.getElementById('root')!).render(<App/>);

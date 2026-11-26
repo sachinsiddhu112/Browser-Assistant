@@ -17,6 +17,7 @@ export function maskCloudText(value:string){
 }
 export function cloudPayload(goal:string,snapshot:GuidedSnapshot,previous:GuidedDecision[]){
  return {goal:maskCloudText(goal),text:snapshot.text.slice(0,12).map(x=>maskCloudText(x).slice(0,160)),
+  ...(snapshot.links?.length?{links:snapshot.links.map(x=>maskCloudText(x).slice(0,160))}:{}),
   canScrollUp:snapshot.canScrollUp,canScrollDown:snapshot.canScrollDown,
   previousDirections:previous.flatMap(e=>e.type==='scroll'?[e.direction]:[])};
 }

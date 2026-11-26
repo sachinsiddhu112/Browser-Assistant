@@ -82,7 +82,7 @@ test('free-form goal chooses next steps from the real browser, and drafts withou
    <p>Scroll down for the application deadline.</p>
    <div style="height:720px"></div>
    <p>Applications close on Friday.</p>
-   <label>Full name <input type="text"></label>
+   <label>Full name <input type="text"></label><a href="/details">Role details</a><a href="https://external.invalid/details">Off-site details</a>
    <label>Password <input type="password" value="fixture-only-never-read"></label>
    <div style="height:600px"></div>
   </main>`}));
@@ -96,6 +96,10 @@ test('free-form goal chooses next steps from the real browser, and drafts withou
      prompt:async (input:string)=>{
       const {goal,view,previousSteps}=JSON.parse(input);
       if(input.includes('fixture-only-never-read')||view.fields.includes('Password'))throw new Error('Sensitive field leaked');
+      if(goal.includes('details')){
+       if(view.links.includes('Off-site details'))throw new Error('Unexpected off-site link');
+       return JSON.stringify({type:'open_link',link:view.links.indexOf('Role details')});
+      }
       if(goal.includes('name'))return JSON.stringify({type:'draft',entries:[{field:view.fields.indexOf('Full name'),value:'Sachin'}]});
       if(view.text.includes('Applications close on Friday.')){
        if(previousSteps.length!==1)throw new Error('Expected one prior scroll');
@@ -119,5 +123,28 @@ test('free-form goal chooses next steps from the real browser, and drafts withou
   await expect(panel.getByRole('region',{name:'Form draft'})).toContainText('Sachin');
   await expect(site.getByRole('textbox',{name:'Full name'})).toHaveValue('');
   await expect(site.getByLabel('Password')).toHaveValue('fixture-only-never-read');
+  const decide=async(label:string)=>{
+   await site.bringToFront();
+   await panel.getByRole('button',{name:label,exact:true}).evaluate((button:HTMLButtonElement)=>button.click());
+  };
+  await decide('Fill these fields');
+  await expect(site.getByRole('textbox',{name:'Full name'})).toHaveValue('Sachin');
+  await expect(panel.getByRole('status')).toContainText('Filled 1 reviewed fields');
+  await site.getByRole('textbox',{name:'Full name'}).fill('');
+
+  await run('Could you draft my name as Sachin?');
+  await expect(panel.getByRole('region',{name:'Form draft'})).toContainText('Sachin');
+  await site.getByRole('textbox',{name:'Full name'}).evaluate(e=>e.replaceWith(e.cloneNode()));
+  await decide('Fill these fields');
+  await expect(panel.getByRole('status')).toContainText('Verified 0 of 1 fields');
+  await expect(site.getByRole('textbox',{name:'Full name'})).toHaveValue('');
+
+  await run('Could you open the role details?');
+  await expect(panel.getByRole('region',{name:'Link review'})).toContainText('https://example.com/details');
+  await expect(site).toHaveURL('https://example.com/');
+  await decide('Open this link');
+  await expect(site).toHaveURL('https://example.com/details');
+  await expect(panel.getByRole('status')).toContainText('Opened the reviewed link');
+
  }finally{await context.close();await rm(dir,{recursive:true,force:true})}
 });
