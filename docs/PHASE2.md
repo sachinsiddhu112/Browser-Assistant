@@ -1,0 +1,3 @@
+# Phase 2 — first increment
+
+DOM observation and a restricted executor module, deterministic intent routing, and navigation allowlist. Generic clicks intentionally denied pending skill authorization. Search typing is a primitive, not yet exposed to user commands. The executor is not yet connected to the background worker; the existing mock lifecycle remains intact. Next: idempotent injection, permission-aware orchestration, verified navigation, cancellation, fixture tests, and YouTube playback skill. No local model or cloud inference in this increment. Dependency lockfile remains to be verified.
