@@ -12,5 +12,10 @@
   },
   "devDependencies": {
     "@playwright/test": "1.56.1"
+  },
+  "pnpm": {
+    "overrides": {
+      "@vitejs/plugin-react": "5.1.1"
+    }
   }
 }
