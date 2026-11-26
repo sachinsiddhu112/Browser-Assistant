@@ -11,6 +11,12 @@ export function createEngine(){
  }
  function execute(raw:unknown){
   const a=Action.parse(raw);
+  if(a.type==='press_key'){
+   // Scroll equivalents only: do not dispatch synthetic keys to forms or page handlers.
+   if(a.key==='PageDown'||a.key==='PageUp'||a.key==='ArrowDown'||a.key==='ArrowUp'){const amount=a.key.startsWith('Page')?innerHeight*.8:40;window.scrollBy(0,a.key.endsWith('Down')?amount:-amount);return {ok:true}}
+   if(a.key==='Home'||a.key==='End'){window.scrollTo(0,a.key==='Home'?0:document.documentElement.scrollHeight);return {ok:true}}
+   throw new Error('Key not authorized');
+  }
   if(a.type==='scroll'){const before=window.scrollY;window.scrollBy(0,a.direction==='down'?innerHeight*.8:-innerHeight*.8);return {ok:true,changed:window.scrollY!==before}}
   if(a.type!=='click'&&a.type!=='type')throw new Error('Unsupported DOM action');
   const e=elements[a.elementId];
