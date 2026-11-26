@@ -136,7 +136,7 @@ test('free-form goal chooses next steps from the real browser, and drafts withou
   await expect(panel.getByRole('region',{name:'Form draft'})).toContainText('Sachin');
   await site.getByRole('textbox',{name:'Full name'}).evaluate(e=>e.replaceWith(e.cloneNode()));
   await decide('Fill these fields');
-  await expect(panel.getByRole('status')).toContainText('could not be verified');
+  await expect(panel.getByRole('status')).toContainText('Verified 0 of 1 fields');
   await expect(site.getByRole('textbox',{name:'Full name'})).toHaveValue('');
 
   await run('Could you open the role details?');
