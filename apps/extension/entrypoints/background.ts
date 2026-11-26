@@ -7,12 +7,12 @@ export default defineBackground(()=>{
  async function read(){const raw=(await browser.storage.session.get(key))[key];const parsed=Session.safeParse(raw);return parsed.success?parsed.data:null}
  async function write(s:Session){await browser.storage.session.set({[key]:s});await browser.tabs.sendMessage(s.tabId,{type:'STATE',session:s}).catch(()=>{});return s}
  async function activeTab(){const [tab]=await browser.tabs.query({active:true,currentWindow:true});if(tab?.id===undefined||!/^https?:/.test(tab.url??''))throw new Error('Select a regular website and activate the extension');return tab.id}
- async function inject(tabId:number){await browser.scripting.executeScript({target:{tabId},files:['overlay.js']})}
+ async function inject(tabId:number){await browser.scripting.executeScript({target:{tabId},files:['/overlay.js']})}
  // A restarted worker never resumes an uncertain task automatically.
  void serial(async()=>{const s=await read();if(s&&!terminal(s))await write({...s,phase:'error',message:'Worker restarted; start a new task'})});
  browser.sidePanel.setPanelBehavior({openPanelOnActionClick:true}).catch(console.error);
  browser.runtime.onMessage.addListener((raw,sender,respond)=>{
-  if(sender.id!==browser.runtime.id||sender.url!==browser.runtime.getURL('sidepanel.html'))return false;
+  if(sender.id!==browser.runtime.id||sender.url!==browser.runtime.getURL('/sidepanel.html'))return false;
   const p=Request.safeParse(raw);if(!p.success)return false;
   void serial(async()=>{
    const req=p.data;

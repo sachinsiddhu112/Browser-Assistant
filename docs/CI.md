@@ -1,0 +1,2 @@
+# Foundation CI
+CI runs on pushes and pull requests. Browser tests use a local intercepted fixture and a test-only manifest granting access to example.com; production permissions are unchanged. The standalone extension page exercises messaging, not native side panel UI or activeTab gesture semantics. Manual Chrome smoke testing remains required. Audit is advisory until dependencies are reviewed. Lockfile is uploaded for review, not automatically committed.
