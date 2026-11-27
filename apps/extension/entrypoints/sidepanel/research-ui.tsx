@@ -20,7 +20,7 @@ async function waitLoaded(id:number,url:string,signal:AbortSignal){
  }
  throw new Error('A page did not finish loading.');
 }
-async function openVerified(url:string,windowId:number,active:boolean,signal:AbortSignal){
+export async function openVerified(url:string,windowId:number,active:boolean,signal:AbortSignal){
  signal.throwIfAborted();
  const tab=await browser.tabs.create({windowId,active,url:'about:blank'});
  if(tab.id===undefined)throw new Error('Could not open a research tab.');

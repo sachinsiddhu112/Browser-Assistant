@@ -92,3 +92,21 @@ scrolling to instant and remove nonessential side-panel and overlay motion.
 - The **Speak results** toggle defaults to off and is available next to Task
   result. It uses only an installed on-device voice, cancels on disable, next
   task, or dictation, and leaves written results available with no local voice.
+
+## Saved details and application finder
+
+- **Saved details** stores optional first name, last name, email and phone in
+  Chrome extension-local storage. The background worker refuses profile
+  operations until storage access is restricted to trusted extension contexts.
+  The profile is not available in incognito and is never added to AI requests.
+- “Apply for the Backend Engineer role at a company” searches for a posting.
+  The user selects the destination; the browser checks the title, employer
+  and an optional requested location. If necessary, the user also selects
+  a linked application page. This works with standard supported forms, not
+  sign-in walls, third-party embeds or arbitrary Apply buttons.
+- The extension reviews a bounded set of matching, empty fields on one
+  same-origin HTML form. It binds the draft to the document, form, action,
+  field identities and labels. Reviewers can edit or skip values before
+  filling. Unsupported fields, uploads and final submission stay manual.
+- Use **Fill from my profile** on an application form already open. Saving or
+  deleting a profile does not fill any site.

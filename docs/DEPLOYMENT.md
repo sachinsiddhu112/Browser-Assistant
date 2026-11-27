@@ -71,3 +71,12 @@ executes it. The **Dictate locally (English)** button only uses installed
 on-device English recognition, asks Chrome for microphone access on use, and
 does not switch to remote speech recognition. Neither feature silently installs
 a model. Both leave normal typed commands available on unsupported devices.
+
+## Saved details and applications
+
+Use dummy contact details on test pages. Set them in **Saved details**, open a
+supported HTTPS application form, and use **Fill from my profile**. Verify the
+page stays empty until approval. Edit one value, skip another, and check that
+nothing is submitted. The application finder additionally supports a command
+such as `Apply for the Backend Engineer role at Acme in Noida`; select the
+posting and its application link when prompted.

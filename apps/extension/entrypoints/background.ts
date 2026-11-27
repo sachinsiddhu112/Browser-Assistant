@@ -1,3 +1,4 @@
+import {inspectProfileForm,matchSavedDetails,Profile,ProfileTarget,ProfileValuesKey,emptyProfile} from '../core/profile';
 import {parseFormIntent} from '../core/form-intent';
 import {parseSiteIntent} from '../core/site-intent';
 import {Request,Session,VideoApproval,cancel,terminal} from '../core/session';
@@ -8,6 +9,11 @@ import {readGuidedViewport} from '../core/guided-page';
 import {movePage} from '../core/scroll-motion';
 export default defineBackground(()=>{
  const key='assistant.session';
+ // The restriction must succeed before serving any profile operation.
+ const profileAccess=Promise.resolve().then(()=>Promise.all(
+  [browser.storage.local,browser.storage.session].map(area=>
+   (area as typeof area & {setAccessLevel(opts:{accessLevel:'TRUSTED_CONTEXTS'}):Promise<void>}).setAccessLevel({accessLevel:'TRUSTED_CONTEXTS'})),
+ )).then(()=>true,()=>false);
  let queue:Promise<unknown>=Promise.resolve();
  function serial<T>(fn:()=>Promise<T>):Promise<T>{const next=queue.then(fn,fn);queue=next.catch(()=>{});return next}
  async function read(){const p=Session.safeParse((await browser.storage.session.get(key))[key]);return p.success?p.data:null}
@@ -180,6 +186,32 @@ export default defineBackground(()=>{
   void serial(async()=>{
    const req=p.data;
    if(req.type==='GET_STATE')return read();
+   if(req.type==='GET_PROFILE'||req.type==='SAVE_PROFILE'||req.type==='DELETE_PROFILE'||req.type==='DRAFT_PROFILE'){
+    if(!await profileAccess)throw new Error('Chrome could not protect local profile storage.');
+    const tabId=await activeTab(false),tab=await browser.tabs.get(tabId);
+    if(tab.incognito)throw new Error('Saved details are unavailable in incognito.');
+    if(req.type==='SAVE_PROFILE'){await browser.storage.local.set({[ProfileValuesKey]:req.profile});return {profile:req.profile}}
+    if(req.type==='DELETE_PROFILE'){
+     await browser.storage.local.remove(ProfileValuesKey);
+     const pending=await read();if(pending?.review?.type==='profile')await write(cancel(pending));
+     return {profile:emptyProfile};
+    }
+    const profile=Profile.safeParse((await browser.storage.local.get(ProfileValuesKey))[ProfileValuesKey]);
+    if(req.type==='GET_PROFILE')return {profile:profile.success?profile.data:emptyProfile};
+    const old=await read();if(old&&!terminal(old))throw new Error('Stop the current task first.');
+    if(!profile.success||!Object.values(profile.data).some(Boolean))throw new Error('Add your contact details under Saved details first.');
+    if(!tab.url?.startsWith('https:')||(req.expectedTab&&(tabId!==req.expectedTab.id||tab.url!==req.expectedTab.url)))throw new Error('The approved page is not active.');
+    const [r]=await browser.scripting.executeScript({target:{tabId},func:inspectProfileForm});
+    const after=await browser.tabs.get(tabId);
+    if(!r?.documentId||!after.active||after.url!==tab.url||r.result?.kind!=='profile-fields')throw new Error('The page changed while reading the form.');
+    const fields=ProfileTarget.array().max(30).parse(r.result.fields);
+    const items=matchSavedDetails(profile.data,fields);
+    if(!items.length)throw new Error('No unambiguous empty contact fields were found in a supported form. The page is open for manual entry.');
+    return {session:await write({id:crypto.randomUUID(),tabId,command:'Saved details draft',phase:'waiting-confirmation',
+     message:'Review the saved details before filling. Nothing has been entered.',
+     guided:{documentId:r.documentId,url:tab.url,expiresAt:Date.now()+90_000,steps:0,mode:'local',fields:[],links:[],canScrollDown:false,canScrollUp:false},
+     draft:items.map(({label,value})=>({label,value})),review:{type:'profile',items}})};
+   }
    if(req.type==='STOP'){const s=await read();return s?write(cancel(s)):null}
    if(req.type==='SHOW_OVERLAY'){const tab=await activeTab();await inject(tab);const s=await read();if(s?.tabId===tab)await browser.tabs.sendMessage(tab,{type:'STATE',phase:s.phase}).catch(()=>{});return s}
    if(req.type==='START'&&parseFormIntent(req.command)){
@@ -241,20 +273,31 @@ export default defineBackground(()=>{
      const t=await browser.tabs.get(s.tabId);
      if(!t.active||t.url!==g.url||Date.now()>=g.expiresAt)return failure('The page or review expired. Start again.');
      const target={tabId:s.tabId,documentIds:[g.documentId]};
-     if(req.values&&review.type!=='fill')return failure('This review cannot accept field values.');
+     if(req.values&&review.type!=='fill'&&review.type!=='profile')return failure('This review cannot accept field values.');
      if(review.type==='expand'){
       if(g.mode!=='local')return failure('Only local mode can expand a disclosure');
       const [r]=await browser.scripting.executeScript({target,func:readGuidedViewport,args:[{type:'expand',...review.target}]});
       if(r?.result?.kind!=='expanded'||!r.result.opened)return failure('The reviewed disclosure did not open.');
       return write({...s,review:undefined,phase:'thinking',message:'Disclosure opened. Checking what changed.',guided:{...g,steps:g.steps+1}});
      }
-     if(review.type==='fill'){
+     if(review.type==='fill'||review.type==='profile'){
       if(g.mode!=='local')return failure('Cloud mode cannot enter form data');
       if(req.values&&req.values.length!==review.items.length)return failure('The edited draft no longer matches the reviewed fields.');
-      const items=review.items.map((item,i)=>({...item,value:req.values?.[i]??item.value}));
-      const [r]=await browser.scripting.executeScript({target,func:readGuidedViewport,args:[{type:'fill',items}]});
-      const count=r?.result?.kind==='filled'?r.result.count:0;
-      if(count!==review.items.length)return failure('Verified '+count+' of '+review.items.length+' fields. Check the page before continuing; nothing was submitted by the extension.');
+      const values=req.values??review.items.map(item=>item.value);
+      const count=await (async()=>{
+       if(review.type==='profile'){
+        const items=review.items.flatMap((item,i)=>values[i]===null?[]:[{...item,value:values[i]!}]);
+        if(!items.length)throw new Error('No fields selected.');
+        const [r]=await browser.scripting.executeScript({target,func:inspectProfileForm,args:[items]});
+        return r?.result?.kind==='profile-filled'?r.result.count:0;
+       }
+       const items=review.items.flatMap((item,i)=>values[i]===null?[]:[{...item,value:values[i]!}]);
+       if(!items.length)throw new Error('No fields selected.');
+       const [r]=await browser.scripting.executeScript({target,func:readGuidedViewport,args:[{type:'fill',items}]});
+       return r?.result?.kind==='filled'?r.result.count:0;
+      })();
+      const expected=values.filter(v=>v!==null).length;
+      if(count!==expected)return failure('Verified '+count+' of '+expected+' fields. Check the page before continuing; nothing was submitted by the extension.');
       return write({...s,...clear,phase:'success',message:'Filled '+count+' reviewed fields. You control file uploads and submission on the website.'});
      }
      const [r]=await browser.scripting.executeScript({target,func:readGuidedViewport,args:[{type:'link',...review.target}]});
@@ -334,6 +377,6 @@ export default defineBackground(()=>{
    const old=await read();if(old&&!terminal(old))throw new Error('Stop the current task first');
    const tabId=await activeTab(routeIntent(req.command)?.type!=='open_youtube_tab'&&!parseSiteIntent(req.command));const s=await write({id:crypto.randomUUID(),tabId,command:req.command,phase:'thinking',message:'Routing local command'});
    setTimeout(()=>{void execute(s).catch(console.error)},0);return s;
-  }).then(result=>respond(result&&'session' in result?{ok:true,...result}:{ok:true,session:result}),e=>respond({ok:false,error:e instanceof Error?e.message:'Request failed'}));return true;
+  }).then(result=>respond(result&&('session' in result||'profile' in result)?{ok:true,...result}:{ok:true,session:result}),e=>respond({ok:false,error:e instanceof Error?e.message:'Request failed'}));return true;
  });
 });

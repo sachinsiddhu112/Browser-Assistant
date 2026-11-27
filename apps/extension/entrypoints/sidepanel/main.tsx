@@ -12,6 +12,8 @@ import {askCloud,cloudPayload} from '../../core/cloud-client';
 import {createResultSpeech} from '../../core/result-speech';
 import {parseResearch} from '../../core/research';
 import {ResearchCards,useResearch} from './research-ui';
+import {applicationIntent,isProfileCommand} from '../../core/application-intent';
+import {ApplicationCards,SavedDetails,useApplication} from './application-ui';
 import './style.css';
 const SPEAK_KEY='assistant.speakResults';
 const QUICK_COMMANDS=['Scroll down','Inspect page','YouTube in new tab'];
@@ -33,7 +35,9 @@ function App(){
  const [voicesRevision,setVoicesRevision]=useState(0);
  const lastSpoken=useRef(''),ignoredSession=useRef(''),speechArmed=useRef(false),speechPreferenceTouched=useRef(false);
  const [draftValues,setDraftValues]=useState<string[]>([]);
+ const [draftSkipped,setDraftSkipped]=useState<number[]>([]);
  const [session,setSession]=useState<Session|null>(null),[command,setCommand]=useState(''),[error,setError]=useState(''),[pending,setPending]=useState(false);
+ const application=useApplication(setSession);
  const [preparing,setPreparing]=useState(false),[listening,setListening]=useState(false),[draftNotice,setDraftNotice]=useState('');
  const [siteReview,setSiteReview]=useState<ReturnType<typeof parseSiteIntent>>(null);
  const initialAvailability=useRef<Promise<LocalModelAvailability>|null>(null);
@@ -85,7 +89,7 @@ function App(){
   if(!speaker.hasLocalVoice())setSpeechNotice('No on-device voice is available. You can still read the result.');
  }
  useEffect(()=>{
-  setDraftValues(session?.draft?.map(field=>field.value)??[]);
+  setDraftValues(session?.draft?.map(field=>field.value)??[]);setDraftSkipped([]);
  },[session?.id,session?.draft?.length]);
  async function prepare(){
   if(preparing||listening||!command.trim())return;
@@ -113,8 +117,12 @@ function App(){
  }
  async function run(approveSite=false){
   const goal=command.trim();
-  if(!goal||guidedAbort.current||research.busy||research.review||pending||preparing||listening||session&&!terminal(session))return;
+  if(!goal||guidedAbort.current||research.busy||research.review||application.busy||application.review||pending||preparing||listening||session&&!terminal(session))return;
   speaker.cancel();speechArmed.current=true;lastSpoken.current=answer?.id??'';ignoredSession.current=session?.id??'';setSpeechNotice('');
+  if(isProfileCommand(goal)){research.clear();application.clear();await send('DRAFT_PROFILE');return}
+  const job=applicationIntent(goal);
+  if(job){research.clear();setSiteReview(null);setError('');await application.start(job);return}
+  application.clear();
   try{
    const plan=parseResearch(goal);
    if(plan){setSiteReview(null);setError('');await research.start(plan);return}
@@ -210,8 +218,8 @@ function App(){
   };
  },[]);
  const running=!!session&&!terminal(session);
- const busy=pending||running||guiding||preparing||listening||research.busy||!!research.review;
- const changeCommand=(value:string)=>{setCommand(value);research.clear();setSiteReview(null);setDraftNotice('');setError('')};
+ const busy=pending||running||guiding||preparing||listening||research.busy||!!research.review||application.busy||!!application.review;
+ const changeCommand=(value:string)=>{setCommand(value);research.clear();application.clear();setSiteReview(null);setDraftNotice('');setError('')};
  const phase=guiding&&!running?'thinking':session?.phase??'idle';
  const result=guiding&&!running?'Preparing the task…':session?.message??'Your result will appear here.';
  return <main className="panel">
@@ -229,13 +237,13 @@ function App(){
 
   <form className="composer card" noValidate onSubmit={e=>{e.preventDefault();if(!siteReview)void run()}}>
    <label htmlFor="command">Command</label>
-   <textarea id="command" maxLength={1000} placeholder="Try Scroll down or Research a topic" value={command} disabled={preparing||listening||guiding||running||research.busy} onChange={e=>changeCommand(e.target.value)}/>
+   <textarea id="command" maxLength={1000} placeholder="Try Scroll down or Research a topic" value={command} disabled={preparing||listening||guiding||running||research.busy||application.busy} onChange={e=>changeCommand(e.target.value)}/>
    <div className="examples" aria-label="Example commands">
     {QUICK_COMMANDS.map(label=><button className="chip" key={label} type="button" disabled={busy} onClick={()=>changeCommand(label==='YouTube in new tab'?'Open YouTube in a new tab':label)}>{label}</button>)}
    </div>
    <div className="composer-actions">
     {!siteReview&&<button className="primary" type="submit" disabled={busy||!command.trim()}>Run task <Icon name="arrow"/></button>}
-    <button className="secondary mic" type="button" disabled={pending||running||guiding||preparing||research.busy} onClick={()=>void dictate()} title={listening?'Stop listening':'Dictate locally (English)'} aria-label={listening?'Stop listening':'Dictate locally (English)'}><Icon name="mic"/>{listening?'Stop listening':'Dictate'}</button>
+    <button className="secondary mic" type="button" disabled={pending||running||guiding||preparing||research.busy||application.busy||!!application.review} onClick={()=>void dictate()} title={listening?'Stop listening':'Dictate locally (English)'} aria-label={listening?'Stop listening':'Dictate locally (English)'}><Icon name="mic"/>{listening?'Stop listening':'Dictate'}</button>
    </div>
    {draftNotice&&<p className="muted helper">{draftNotice}</p>}
   </form>
@@ -257,6 +265,7 @@ function App(){
    {speakingEnabled&&answer&&speechNotice.startsWith('Playback needs')&&<button className="secondary" type="button" onClick={()=>playResult(answer)}>Play result</button>}
   </section>
   <ResearchCards research={research}/>
+  <ApplicationCards flow={application}/>
 
   {session?.phase==='waiting-confirmation'&&session.videoApproval&&<section className="card review" aria-label="YouTube choices">
    <h2>Choose a YouTube result</h2>
@@ -264,11 +273,13 @@ function App(){
   </section>}
   {session?.draft&&<section className="card review" aria-label="Form draft">
    <h2>Review form draft</h2>{session.guided&&<p className="target">{new URL(session.guided.url).origin}</p>}
-   <div className="draft-fields">{session.draft.map((field,i)=><label key={i}>{field.label}
-    <input type="text" value={draftValues[i]??field.value} maxLength={160} onChange={e=>{const value=e.currentTarget.value;setDraftValues(values=>values.map((v,j)=>j===i?value:v))}}/>
-   </label>)}</div>
+   <div className="draft-fields">{session.draft.map((field,i)=><div className="draft-row" key={i}><label>{field.label}
+    <input disabled={draftSkipped.includes(i)} type="text" value={draftValues[i]??field.value} maxLength={160} onChange={e=>{const value=e.currentTarget.value;setDraftValues(values=>values.map((v,j)=>j===i?value:v))}}/>
+   </label>
+   <label className="skip-field"><input type="checkbox" checked={draftSkipped.includes(i)} onChange={()=>setDraftSkipped(prev=>prev.includes(i)?prev.filter(j=>j!==i):[...prev,i])}/> Skip {field.label}</label>
+   </div>)}</div>
    <p className="muted">The site can react to entered text immediately. Review every value. Upload files and submit on the website yourself.</p>
-   <button className="primary full" type="button" disabled={pending||guiding||draftValues.length!==session.draft.length||draftValues.some(x=>!x.trim())} onClick={()=>void send('APPROVE_GUIDED',{sessionId:session.id,values:draftValues})}>Fill these fields</button>
+   <button className="primary full" type="button" disabled={pending||guiding||draftValues.length!==session.draft.length||draftSkipped.length===session.draft.length||draftValues.some((x,i)=>!draftSkipped.includes(i)&&!x.trim())} onClick={()=>void send('APPROVE_GUIDED',{sessionId:session.id,values:draftValues.map((x,i)=>draftSkipped.includes(i)?null:x)})}>Fill these fields</button>
   </section>}
   {session?.review?.type==='expand'&&<section className="card review" aria-label="Disclosure review">
    <h2>Expand this section?</h2><p>{session.review.target.label}</p>
@@ -279,6 +290,7 @@ function App(){
    <button className="primary full" type="button" disabled={pending} onClick={()=>void send('APPROVE_GUIDED',{sessionId:session.id})}>Open this link <Icon name="arrow"/></button>
   </section>}
 
+  <SavedDetails disabled={busy} onFill={()=>{application.clear();research.clear();void send('DRAFT_PROFILE')}}/>
   <details className="card settings">
    <summary><Icon name="brand"/><span>More tools</span></summary>
    <div className="settings-body tool-stack">

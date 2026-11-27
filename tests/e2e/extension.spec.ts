@@ -383,3 +383,61 @@ test('research selects two sites, compares verified evidence and speaks the resu
   expect((await get()).cancelled).toBe(1);
  }finally{await context.close();await rm(dir,{recursive:true,force:true})}
 });
+
+test('application finder follows a reviewed link and only fills approved saved details',async()=>{
+ const dir=await mkdtemp(resolve(tmpdir(),'assistant-application-'));
+ const extension=resolve('apps/extension/.output/chrome-mv3-test');
+ const context=await chromium.launchPersistentContext(dir,{channel:'chromium',headless:process.env.PW_HEADLESS==='1',args:['--disable-extensions-except='+extension,'--load-extension='+extension]});
+ try{
+  const worker=context.serviceWorkers()[0]??await context.waitForEvent('serviceworker');
+  await context.route('https://www.google.com/search?*',r=>r.fulfill({contentType:'text/html',body:'<main><a href="https://example.com/careers/backend"><h3>Acme Backend Engineer posting</h3></a></main>'}));
+  await context.route('https://example.com/**',r=>r.fulfill({contentType:'text/html',body:r.request().url().endsWith('/careers/backend')
+   ?'<main><h1>Backend Engineer</h1><p>Acme · Noida</p><a href="https://example.org/forms/backend">Apply now</a></main>'
+   :'<main><h1>Start page</h1></main>'}));
+  await context.route('https://example.org/forms/backend',r=>r.fulfill({contentType:'text/html',body:
+   '<main><h1>Apply for Backend Engineer</h1><form action="/submit" method="post" onsubmit="document.body.dataset.submitted=1; return false"><label>Full name <input autocomplete="name"></label><label>Email address <input type="email" autocomplete="email"></label><label>Phone number <input type="tel" autocomplete="tel"></label><label>Current salary <input></label><button type="submit">Submit application</button></form></main>'}));
+  const source=await context.newPage();await source.goto('https://example.com/');
+  const panel=await context.newPage();await panel.goto('chrome-extension://'+new URL(worker.url()).host+'/sidepanel.html');
+  await panel.evaluate(()=>{
+   (globalThis as any).fixtureAccess=[];
+   (globalThis as any).chrome.permissions.request=async({origins}:{origins:string[]})=>{(globalThis as any).fixtureAccess.push(origins);return true};
+   globalThis.fetch=async()=>{throw new Error('Job preparation must not call the planner or send profile values.')};
+  });
+  const settings=panel.getByLabel('Saved details');
+  await settings.locator('summary').click();
+  await settings.getByRole('textbox',{name:'First name'}).fill('Casey');
+  await settings.getByRole('textbox',{name:'Last name'}).fill('Applicant');
+  await settings.getByRole('textbox',{name:'Email address'}).fill('casey@example.org');
+  await settings.getByRole('textbox',{name:'Phone number'}).fill('+1 555 010 1234');
+  await settings.getByRole('button',{name:'Save details'}).click();
+  await expect(settings).toContainText('Saved on this device.');
+  await settings.locator('summary').click();
+  await panel.getByRole('textbox',{name:'Command'}).fill('Apply for the Backend Engineer role at Acme in Noida using my saved profile');
+  await source.bringToFront();
+  await panel.evaluate(()=>document.querySelector('form')?.requestSubmit());
+  const job=panel.getByRole('region',{name:'Job application'});
+  await job.getByRole('button',{name:/Acme Backend Engineer posting/}).click();
+  await job.getByRole('button',{name:/Apply now/}).click();
+  const draft=panel.getByRole('region',{name:'Form draft'});
+  await expect(draft.getByRole('textbox',{name:'Full name'})).toHaveValue('Casey Applicant');
+  await expect(draft.getByRole('textbox',{name:'Email address'})).toHaveValue('casey@example.org');
+  await expect(draft.getByRole('textbox',{name:'Current salary'})).toHaveCount(0);
+  const form=context.pages().find(p=>p.url()==='https://example.org/forms/backend')!;
+  await expect(form.getByLabel('Full name')).toHaveValue('');
+  await draft.getByRole('checkbox',{name:'Skip Phone number'}).check();
+  await draft.getByRole('textbox',{name:'Full name'}).fill('Casey A.');
+  await form.bringToFront();
+  await draft.getByRole('button',{name:'Fill these fields'}).evaluate((b:HTMLButtonElement)=>b.click());
+  await expect(form.getByLabel('Full name')).toHaveValue('Casey A.');
+  await expect(form.getByLabel('Email address')).toHaveValue('casey@example.org');
+  await expect(form.getByLabel('Phone number')).toHaveValue('');
+  await expect(form.getByLabel('Current salary')).toHaveValue('');
+  expect(await form.locator('body').getAttribute('data-submitted')).toBeNull();
+  expect(await panel.evaluate(()=>(globalThis as any).fixtureAccess)).toEqual([['https://example.com/*'],['https://example.org/*']]);
+  await settings.locator('summary').click();
+  await expect(settings.getByRole('textbox',{name:'Email address'})).toHaveValue('casey@example.org');
+  await settings.getByRole('button',{name:'Delete saved details'}).click();
+  await expect(settings).toContainText('Saved details deleted.');
+  await expect(settings.getByRole('textbox',{name:'Email address'})).toHaveValue('');
+ }finally{await context.close();await rm(dir,{recursive:true,force:true})}
+});
