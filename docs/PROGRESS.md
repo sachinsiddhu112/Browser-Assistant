@@ -70,3 +70,10 @@ notice comes back when the panel is reopened.
 The backend host is fixed and declared at install time; website access and
 individual link/form approvals remain separate. Cloud excerpts still exclude
 form labels and values, and cloud tasks are blocked in incognito.
+
+## Motion polish
+
+Direct commands and guided tasks use Chrome's native smooth scroll and wait for
+movement to settle before reporting success or reading the next viewport. Real
+page input interrupts the guided scroll. Reduced-motion preferences switch
+scrolling to instant and remove nonessential side-panel and overlay motion.

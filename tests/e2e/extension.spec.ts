@@ -22,9 +22,30 @@ test('extension local navigation and scrolling',async()=>{
   const send=(type:string,extra:object={})=>panel.evaluate(async({type,extra})=>(globalThis as any).chrome.runtime.sendMessage({type,...extra}),{type,extra});
   expect((await send('SHOW_OVERLAY')).ok).toBe(true);
   await expect(site.locator('#browser-assistant-overlay')).toBeVisible();
+  const readScrollSamples=()=>site.evaluate(()=>(globalThis as typeof globalThis & {fixtureScroll:number[]}).fixtureScroll);
+  await site.emulateMedia({reducedMotion:'no-preference'});
+  await site.evaluate(()=>{
+   const state=globalThis as typeof globalThis & {fixtureScroll:number[]};
+   state.fixtureScroll=[];
+   document.addEventListener('scroll',()=>state.fixtureScroll.push(scrollY));
+  });
   expect((await send('START',{command:'Scroll down'})).ok).toBe(true);
-  await expect.poll(async()=> (await send('GET_STATE')).session?.phase).toBe('success');
-  await expect.poll(()=>site.evaluate(()=>scrollY)).toBeGreaterThan(0);
+  await expect.poll(async()=> (await send('GET_STATE')).session?.message).toBe('Page scrolled');
+  const scrolled=await site.evaluate(()=>scrollY);
+  expect(scrolled).toBeGreaterThan(0);
+  expect((await readScrollSamples()).some(y=>y>0&&y<scrolled)).toBe(true);
+
+  await site.emulateMedia({reducedMotion:'reduce'});
+  await site.evaluate(()=>{(globalThis as typeof globalThis & {fixtureScroll:number[]}).fixtureScroll=[]});
+  expect((await send('START',{command:'Page up'})).ok).toBe(true);
+  await expect.poll(async()=> (await send('GET_STATE')).session?.message).toBe('Page scrolled');
+  await expect.poll(readScrollSamples).toEqual([0]);
+  expect((await send('START',{command:'Page up'})).ok).toBe(true);
+  await expect.poll(async()=> (await send('GET_STATE')).session?.message).toBe('Already at the edge of the page');
+  await panel.emulateMedia({reducedMotion:'reduce'});
+  await expect(panel.locator('.result-message')).toHaveCSS('animation-name','none');
+  await panel.emulateMedia({reducedMotion:'no-preference'});
+  await expect(panel.locator('.result-message')).toHaveCSS('animation-name','assistant-appear');
   expect((await send('START',{command:'Inspect page'})).ok).toBe(true);
   await expect.poll(async()=> (await send('GET_STATE')).session?.message).toContain('Observed 1 interactive elements');
   expect((await send('START',{command:'Type NestJS into search'})).ok).toBe(true);

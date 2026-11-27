@@ -1,3 +1,4 @@
+import {movePage} from './scroll-motion';
 import {Action} from '@browser-assistant/shared';
 const selector='a[href],button,input,textarea,select,[role="button"],[role="link"],[contenteditable="true"]';
 function visible(el:HTMLElement){const r=el.getBoundingClientRect();const s=getComputedStyle(el);return r.width>0&&r.height>0&&s.visibility==='visible'&&s.display!=='none'&&!el.closest('[hidden],[inert],[aria-hidden="true"]')}
@@ -9,15 +10,16 @@ export function createEngine(){
   elements=Array.from(document.querySelectorAll<HTMLElement>(selector)).filter(e=>visible(e)&&!sensitive(e)&&!e.matches(':disabled,[aria-disabled="true"]')).slice(0,150);
   return {snapshotId,url,title:document.title.slice(0,200),elements:elements.map((e,id)=>({id,tag:e.tagName.toLowerCase(),inputType:e instanceof HTMLInputElement?e.type:undefined,role:e.getAttribute('role')??'',label:(e.getAttribute('aria-label')??e.getAttribute('placeholder')??e.textContent??'').trim().slice(0,160)}))};
  }
- function execute(raw:unknown){
+ async function execute(raw:unknown){
   const a=Action.parse(raw);
   if(a.type==='press_key'){
-   // Scroll equivalents only: do not dispatch synthetic keys to forms or page handlers.
-   if(a.key==='PageDown'||a.key==='PageUp'||a.key==='ArrowDown'||a.key==='ArrowUp'){const amount=a.key.startsWith('Page')?innerHeight*.8:40;window.scrollBy(0,a.key.endsWith('Down')?amount:-amount);return {ok:true}}
-   if(a.key==='Home'||a.key==='End'){window.scrollTo(0,a.key==='Home'?0:document.documentElement.scrollHeight);return {ok:true}}
-   throw new Error('Key not authorized');
+   // Scroll equivalents only: never send synthetic keys to page handlers.
+   if(a.key==='Escape')throw new Error('Key not authorized');
+   const direction=a.key==='Home'||a.key.endsWith('Up')?'up':'down';
+   const distance=a.key.startsWith('Page')?'viewport':a.key.startsWith('Arrow')?'arrow':'edge';
+   return {ok:true,scroll:await movePage(direction,distance)};
   }
-  if(a.type==='scroll'){const before=window.scrollY;window.scrollBy(0,a.direction==='down'?innerHeight*.8:-innerHeight*.8);return {ok:true,changed:window.scrollY!==before}}
+  if(a.type==='scroll')return {ok:true,scroll:await movePage(a.direction)};
   if(a.type!=='click'&&a.type!=='type')throw new Error('Unsupported DOM action');
   const e=elements[a.elementId];
   if(a.snapshotId!==snapshotId||url!==location.href||!e?.isConnected||!visible(e)||sensitive(e)||e.matches(':disabled,[aria-disabled="true"]'))throw new Error('Stale or unsafe element');

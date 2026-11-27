@@ -4,7 +4,8 @@ import {Request,Session,VideoApproval,cancel,terminal} from '../core/session';
 import {routeIntent,allowedNavigation,YOUTUBE_HOME} from '../core/intent';
 import {Action} from '@browser-assistant/shared';
 import {GUIDED_TIMEOUT_MS,splitCapture,MAX_GUIDED_STEPS,labelDraft} from '../core/guided-contract';
-import {readGuidedViewport,scrollGuidedViewport} from '../core/guided-page';
+import {readGuidedViewport} from '../core/guided-page';
+import {movePage} from '../core/scroll-motion';
 export default defineBackground(()=>{
  const key='assistant.session';
  let queue:Promise<unknown>=Promise.resolve();
@@ -118,8 +119,19 @@ export default defineBackground(()=>{
    await finish(s,'success','Observed '+count+' interactive elements');return;
   }
   if(action.type==='scroll'||action.type==='press_key'){
-   await step(s,async()=>{await browser.scripting.executeScript({target:{tabId:s.tabId},files:['/executor.js']});const r=await browser.tabs.sendMessage(s.tabId,{type:'EXECUTE_ACTION',action});if(!r?.ok)throw new Error(r?.error??'Scroll failed')});
-   await finish(s,'success','Scroll requested');return;
+   const scroll=await step(s,async()=>{
+    const start=await browser.tabs.get(s.tabId);
+    if(!start.active)throw new Error('The active tab changed before scrolling');
+    await browser.scripting.executeScript({target:{tabId:s.tabId},files:['/executor.js']});
+    const r=await browser.tabs.sendMessage(s.tabId,{type:'EXECUTE_ACTION',action});
+    const end=await browser.tabs.get(s.tabId);
+    if(!end.active||end.url!==start.url)throw new Error('The page changed while scrolling');
+    if(!r?.ok||!r.result?.ok)throw new Error(r?.error??'Scroll failed');
+    return r.result.scroll;
+   });
+   if(scroll==='interrupted')throw new Error('Scrolling was interrupted.');
+   if(scroll!=='edge'&&scroll!=='moved')throw new Error('Scrolling could not be verified.');
+   await finish(s,'success',scroll==='edge'?'Already at the edge of the page':'Page scrolled');return;
   }
   throw new Error('Unsupported action');
  }catch(e){await finish(s,'error',e instanceof Error?e.message:'Task failed')}
@@ -268,8 +280,10 @@ export default defineBackground(()=>{
     if(decision.type==='scroll'){
      if(!(decision.direction==='down'?g.canScrollDown:g.canScrollUp))throw new Error('There is no more page in that direction');
      await write({...s,phase:'acting',message:'Scrolling to check the next part of the page',guided:{...g,steps:g.steps+1}});
-     const [changed]=await browser.scripting.executeScript({target,func:scrollGuidedViewport,args:[decision.direction]});
-     if(!changed?.result)throw new Error('Scrolling did not change the page');
+     const [changed]=await browser.scripting.executeScript({target,func:movePage,args:[decision.direction]});
+     if(changed?.result!=='moved')throw new Error('Unable to verify scrolling. The page may have changed or the scroll was interrupted.');
+     const current=await browser.tabs.get(s.tabId);
+     if(!current.active||current.url!==g.url)throw new Error('The page changed while scrolling');
      const [next]=await browser.scripting.executeScript({target,func:readGuidedViewport});
      const {snapshot,fields,links,disclosures}=splitCapture(next?.result);
      const {canScrollUp,canScrollDown}=snapshot;

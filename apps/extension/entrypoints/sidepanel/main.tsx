@@ -163,11 +163,11 @@ function App(){
    <p>Read pages and navigate with your approval.</p>
   </header>
 
-  {!noticeHidden&&<aside className="card privacy-note" aria-label="Privacy note">
+  <aside className="card privacy-note" aria-label="Privacy note" hidden={noticeHidden}>
    <Icon name="shield"/>
    <p>Some tasks may send your command and visible page excerpts to our online service. Use public pages and non-confidential commands.</p>
    <button className="quiet" type="button" onClick={()=>setNoticeHidden(true)} aria-label="Hide privacy note">Hide</button>
-  </aside>}
+  </aside>
 
   <form className="composer card" noValidate onSubmit={e=>{e.preventDefault();if(!siteReview)void run()}}>
    <label htmlFor="command">Command</label>
@@ -192,7 +192,7 @@ function App(){
    <div className="result-head"><h2 id="result-title">Task result</h2>
     {(running||guiding)&&<button className="quiet stop" type="button" onClick={stop}><Icon name="stop"/>Stop task</button>}
    </div>
-   <div className="result-status" role="status"><span className="phase" data-phase={phase}>{phase}</span><p>{result}</p></div>
+   <div className="result-status" role="status"><span className="phase" data-phase={phase}>{phase}</span><p className="result-message" key={phase}>{result}</p></div>
    {error&&<p className="error" role="alert">{error}</p>}
   </section>
 

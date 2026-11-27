@@ -89,11 +89,3 @@ export function readGuidedViewport(action?:
  const root=document.scrollingElement;
  return {kind:'snapshot' as const,text,disclosures:disclosures.map(({id,label})=>({id,label})),fields:fields.map(({id,label})=>({id,label})),links,canScrollUp:(root?.scrollTop??0)>1,canScrollDown:!!root&&root.scrollTop+root.clientHeight<root.scrollHeight-1};
 }
-
-export function scrollGuidedViewport(direction:'up'|'down'){
- const root=document.scrollingElement;
- if(!root)return false;
- const before=root.scrollTop;
- root.scrollTo({top:before+(direction==='down'?1:-1)*Math.max(100,Math.round(innerHeight*.75)),behavior:'instant'});
- return Math.abs(root.scrollTop-before)>1;
-}
