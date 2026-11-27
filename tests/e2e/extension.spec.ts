@@ -155,7 +155,7 @@ test('free-form goal chooses next steps from the real browser, and drafts withou
   await expect(panel.getByRole('status')).toContainText('Applications close on Friday.');
   expect(await site.evaluate(()=>scrollY)).toBeGreaterThan(0);
   await run('Could you draft my name as Sachin?');
-  await expect(panel.getByRole('region',{name:'Form draft'})).toContainText('Sachin');
+  await expect(panel.getByRole('region',{name:'Form draft'}).getByRole('textbox',{name:'Full name'})).toHaveValue('Sachin');
   await expect(site.getByRole('textbox',{name:'Full name'})).toHaveValue('');
   await expect(site.getByLabel('Password')).toHaveValue('fixture-only-never-read');
   const decide=async(label:string)=>{
@@ -170,14 +170,14 @@ test('free-form goal chooses next steps from the real browser, and drafts withou
   await site.getByRole('textbox',{name:'Full name'}).fill('');
 
   await run('Could you draft my name as Sachin?');
-  await expect(panel.getByRole('region',{name:'Form draft'})).toContainText('Sachin');
+  await expect(panel.getByRole('region',{name:'Form draft'}).getByRole('textbox',{name:'Full name'})).toHaveValue('Sachin');
   await site.getByRole('textbox',{name:'Full name'}).evaluate(e=>e.replaceWith(e.cloneNode()));
   await decide('Fill these fields');
   await expect(panel.getByRole('status')).toContainText('Verified 0 of 1 fields');
   await expect(site.getByRole('textbox',{name:'Full name'})).toHaveValue('');
 
   await run('Fill "Full name" with "Sachin"');
-  await expect(panel.getByRole('region',{name:'Form draft'})).toContainText('Sachin');
+  await expect(panel.getByRole('region',{name:'Form draft'}).getByRole('textbox',{name:'Full name'})).toHaveValue('Sachin');
   await expect(site.getByRole('textbox',{name:'Full name'})).toHaveValue('');
   await decide('Fill these fields');
   await expect(site.getByRole('textbox',{name:'Full name'})).toHaveValue('Sachin');
