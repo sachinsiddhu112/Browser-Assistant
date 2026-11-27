@@ -523,20 +523,20 @@ test('YouTube uses verified results after a URL rewrite and attempts only select
   await context.route('https://www.youtube.com/**',route=>{
    const u=new URL(route.request().url());
    if(u.pathname==='/results'&&u.searchParams.get('search_query')===song){
-    return route.fulfill({contentType:'text/html',body:`<script>history.replaceState(null,'',${JSON.stringify(target)});</script><main>
+    return route.fulfill({contentType:'text/html; charset=utf-8',body:`<script>history.replaceState(null,'',${JSON.stringify(target)});</script><main>
       <ytd-ad-slot-renderer><a href="/watch?v=zzzzzzzzzzz">Promoted video</a></ytd-ad-slot-renderer>
-      <yt-lockup-view-model><a href="/watch?v=${video}&pp=fixture" title="Casa Tupka – Honey Singh">Casa Tupka – Honey Singh</a></yt-lockup-view-model>
+      <yt-lockup-view-model><a href="/watch?v=${video}&pp=fixture" title="Casa Tupka | Honey Singh">Casa Tupka | Honey Singh</a></yt-lockup-view-model>
       <yt-lockup-view-model><a href="https://example.org/watch?v=lmnopqrstuv">External video</a></yt-lockup-view-model>
       <yt-lockup-view-model hidden><a href="/watch?v=zyxwvutsrqp">Hidden video</a></yt-lockup-view-model>
     </main>`});
    }
    if(u.pathname==='/watch'){
     watchLoads++;
-    return route.fulfill({contentType:'text/html',body:`<!doctype html><main id="movie_player"><video controls class="html5-main-video" src="/fixture.wav"></video></main>
+    return route.fulfill({contentType:'text/html; charset=utf-8',body:`<!doctype html><main id="movie_player"><video controls class="html5-main-video" src="/fixture.wav"></video></main>
      <script>document.querySelector('video').addEventListener('play',()=>{document.body.dataset.plays=1+(+document.body.dataset.plays||0)});</script>`});
    }
    if(u.pathname==='/fixture.wav')return route.fulfill({contentType:'audio/wav',body:wav});
-   return route.fulfill({contentType:'text/html',body:'<h1>Start fixture</h1>'});
+   return route.fulfill({contentType:'text/html; charset=utf-8',body:'<h1>Start fixture</h1>'});
   });
   const site=await context.newPage();await site.goto('https://www.youtube.com/');
   const panel=await context.newPage();await panel.goto('chrome-extension://'+new URL(worker.url()).host+'/sidepanel.html');
@@ -548,7 +548,8 @@ test('YouTube uses verified results after a URL rewrite and attempts only select
   await expect(choices.getByRole('button')).toHaveCount(1);
   await expect(site).toHaveURL(target);
   expect(watchLoads).toBe(0);
-  await choices.getByRole('button',{name:'Casa Tupka – Honey Singh'}).evaluate((el:HTMLButtonElement)=>el.click());
+  await expect(choices.getByRole('button').first()).toHaveText('Casa Tupka | Honey Singh');
+  await choices.getByRole('button').first().evaluate((el:HTMLButtonElement)=>el.click(),undefined,{timeout:5000});
   await expect(panel.getByRole('status')).toContainText('Selected YouTube video is playing');
   await expect(site).toHaveURL('https://www.youtube.com/watch?v='+video);
   await expect(site.locator('body')).toHaveAttribute('data-plays','1');
