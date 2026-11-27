@@ -28,8 +28,8 @@ pnpm build
 
 1. Run **Open YouTube in a new tab**. Verify the old tab stays open.
 2. Run **Open docs.nestjs.com in a new tab, then find the Guards guide and summarize it**.
-   Approve only the named site in Chrome. If Chrome AI is not ready, separately
-   review cloud sharing. Review the exact URL before following any proposed link.
+   Approve only the named site in Chrome. The planner selects a route automatically after Run. Review the exact URL before
+   following any proposed link.
 3. On a trusted test form with an empty **Full name** field, run
    `Fill "Full name" with "Example Name"`. Before approval, the field must stay
    empty. After approval, it should contain that value without submitting.
@@ -43,8 +43,7 @@ To make a zip for a private install or future Store submission:
 
 The NestJS service exposes `GET /health` and the optional cloud planner. The
 planner proposes bounded read/navigation steps; Chrome executes and verifies
-approved actions. The user does not enter a backend URL or token. Cloud use is
-opt-in per task; see [public cloud pilot settings](PUBLIC-CLOUD-PILOT.md).
+approved actions. The user does not enter a backend URL or token. Run may use the online planner automatically; see [public cloud pilot settings](PUBLIC-CLOUD-PILOT.md).
 
 ```sh
 docker build -t browser-assistant-api .

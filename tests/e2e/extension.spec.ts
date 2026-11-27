@@ -101,6 +101,7 @@ test('free-form goal chooses next steps from the real browser, and drafts withou
   const panel=await context.newPage();
   await panel.goto('chrome-extension://'+id+'/sidepanel.html');
   await panel.evaluate(()=>{
+   globalThis.fetch=async()=>{throw new Error('A ready local model must not call online fallback')};
    Object.defineProperty(globalThis,'LanguageModel',{configurable:true,value:{
     availability:async()=> 'available',
     create:async()=>({
@@ -173,7 +174,7 @@ test('free-form goal chooses next steps from the real browser, and drafts withou
  }finally{await context.close();await rm(dir,{recursive:true,force:true})}
 });
 
-test('one Run task button routes to cloud only after review',async({},testInfo)=>{
+test('one Run task click uses automatic fallback and retains link review',async({},testInfo)=>{
  const dir=await mkdtemp(resolve(tmpdir(),'assistant-fallback-'));
  const extension=resolve('apps/extension/.output/chrome-mv3-test');
  const context=await chromium.launchPersistentContext(dir,{channel:'chromium',headless:process.env.PW_HEADLESS==='1',args:['--disable-extensions-except='+extension,'--load-extension='+extension]});
@@ -193,8 +194,8 @@ test('one Run task button routes to cloud only after review',async({},testInfo)=
     availability:async()=> 'downloadable',
     create:async()=>{throw new Error('A downloadable model must not be started automatically')},
    }});
-   // Stub Chrome's host prompt and the private backend. No real page data or token leaves the fixture.
-   globals.chrome.permissions.request=async()=>true;
+   // The cloud endpoint uses only the declared backend host; no runtime prompt is needed.
+   globals.chrome.permissions.request=async()=>{throw new Error('Run must not request an online host permission')};
    globalThis.fetch=async (input,init)=>{
     const body=JSON.parse(String(init?.body));
     globals.fixtureCalls.push({url:String(input),body,authorization:new Headers(init?.headers).get('Authorization')});
@@ -212,29 +213,23 @@ test('one Run task button routes to cloud only after review',async({},testInfo)=
   await site.bringToFront();
   const submit=()=>panel.evaluate(()=>document.querySelector('form')?.requestSubmit());
   const calls=()=>panel.evaluate(()=>(globalThis as any).fixtureCalls);
-  const review=panel.getByRole('region',{name:'Cloud sharing review'});
+  await expect(panel.getByRole('complementary',{name:'Privacy note'})).toContainText('may send your command and visible page excerpts');
+  await panel.getByRole('button',{name:'Hide privacy note'}).evaluate((button:HTMLButtonElement)=>button.click());
+  await expect(panel.getByRole('complementary',{name:'Privacy note'})).toHaveCount(0);
+  await expect(panel.getByLabel('Chrome AI availability')).toHaveCount(0);
+  expect(await calls()).toEqual([]);
   await panel.getByRole('button',{name:'Scroll down',exact:true}).evaluate((button:HTMLButtonElement)=>button.click());
   await expect(command).toHaveValue('Scroll down');
   await expect(panel.getByRole('status')).toContainText('idle');
   await submit();
   await expect(panel.getByRole('status')).toContainText('success');
-  await expect(review).toHaveCount(0);
   expect(await calls()).toEqual([]);
   await site.evaluate(()=>window.scrollTo(0,0));
-  await command.fill('What is the heading on this page?');
-  await submit();
-  await expect(review).toContainText('https://example.com');
-  expect(await calls()).toEqual([]);
   await command.fill('Tell me about the visible fixture.');
-  await expect(review).toHaveCount(0);
-  await submit();
-  await expect(panel.getByLabel('Chrome AI availability')).toContainText('model not ready yet');
-  await expect(panel.getByRole('button',{name:'Approve and continue'})).toBeVisible();
   expect(await calls()).toEqual([]);
   await submit();
-  expect(await calls()).toEqual([]); // Implicit submission must not approve sharing.
-  await panel.getByRole('button',{name:'Approve and continue'}).evaluate((button:HTMLButtonElement)=>button.click());
   await expect(panel.getByRole('status')).toContainText('Cloud fixture answer');
+  await expect(panel.getByRole('button',{name:'Approve and continue'})).toHaveCount(0);
   const requests=await calls();
   expect(requests).toHaveLength(1);
   expect(requests[0].url).toBe('https://browser-assistant-api-production.up.railway.app/planner/next');
@@ -242,15 +237,9 @@ test('one Run task button routes to cloud only after review',async({},testInfo)=
   expect(requests[0].body.goal).toBe('Tell me about the visible fixture.');
   expect(JSON.stringify(requests[0].body)).not.toContain('test-only-private-value');
   expect(JSON.stringify(requests[0].body)).not.toContain('Private fixture label');
-  // Approval is not reused on the next task.
-  await submit();
-  await expect(review).toBeVisible();
-  expect(await calls()).toHaveLength(1);
-  await site.reload();
-  await expect(review).toHaveCount(0);
+
   await command.fill('Find the guide and read it.');
   await submit();
-  await panel.getByRole('button',{name:'Approve and continue'}).evaluate((button:HTMLButtonElement)=>button.click());
   await expect(panel.getByRole('region',{name:'Link review'})).toContainText('https://example.com/guide');
   expect(await calls()).toHaveLength(2);
   await expect(site).toHaveURL('https://example.com/');
@@ -258,6 +247,12 @@ test('one Run task button routes to cloud only after review',async({},testInfo)=
   await expect(site).toHaveURL('https://example.com/guide');
   await expect(panel.getByRole('status')).toContainText('Read the public guide.');
   expect(await calls()).toHaveLength(3);
+  await panel.reload();
+  await expect(panel.getByRole('status')).toContainText('Read the public guide.');
+  await expect(panel.getByRole('complementary',{name:'Privacy note'})).toHaveCount(0);
+  await panel.getByText('More tools',{exact:true}).click();
+  await panel.getByRole('button',{name:'Show privacy note'}).click();
+  await expect(panel.getByRole('complementary',{name:'Privacy note'})).toBeVisible();
  }finally{await context.close();await rm(dir,{recursive:true,force:true})}
 });
 

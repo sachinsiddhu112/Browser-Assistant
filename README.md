@@ -16,7 +16,7 @@ Requires Node.js 22 and pnpm 10. Run `corepack enable`, then
 [Architecture](docs/ARCHITECTURE.md) · [Progress](docs/PROGRESS.md)
 
 The extension’s built-in commands and explicit form drafts do not require a
-backend. Free-form tasks try Chrome AI first and offer cloud planning only with
-your approval. The optional NestJS service provides the bounded planner and its
+backend. Free-form tasks prefer on-device processing and fall back automatically to the
+online planner after you run a task. Use public pages and non-confidential commands. The optional NestJS service provides the bounded planner and its
 health endpoint. See [the public cloud pilot](docs/PUBLIC-CLOUD-PILOT.md) for
 budget and deployment settings. Do not commit credentials.

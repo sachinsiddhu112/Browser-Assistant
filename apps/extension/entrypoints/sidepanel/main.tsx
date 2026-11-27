@@ -10,7 +10,7 @@ import {runGuided} from '../../core/guided-planner';
 import {checkGuidedModel,createGuidedModel,GUIDE_TIMEOUT,type LocalModelAvailability} from '../../core/guided-model';
 import {askCloud,cloudPayload} from '../../core/cloud-client';
 import './style.css';
-import {PLANNER_HOST,PLANNER_ORIGIN} from '../../core/cloud-config';
+const PRIVACY_NOTICE_KEY='assistant.privacyNoticeHidden';
 const QUICK_COMMANDS=['Scroll down','Inspect page','YouTube in new tab'];
 function Icon({name}:{name:'brand'|'mic'|'arrow'|'shield'|'settings'|'stop'}){
  const paths={
@@ -26,20 +26,27 @@ function Icon({name}:{name:'brand'|'mic'|'arrow'|'shield'|'settings'|'stop'}){
 function App(){
  const [session,setSession]=useState<Session|null>(null),[command,setCommand]=useState(''),[error,setError]=useState(''),[pending,setPending]=useState(false);
  const [preparing,setPreparing]=useState(false),[listening,setListening]=useState(false),[draftNotice,setDraftNotice]=useState('');
- const [cloudReview,setCloudReview]=useState<{id:number;url:string;goal:string}|null>(null);
  const [siteReview,setSiteReview]=useState<ReturnType<typeof parseSiteIntent>>(null);
- const [localStatus,setLocalStatus]=useState<LocalModelAvailability|'checking'>('checking');
+ const initialAvailability=useRef<Promise<LocalModelAvailability>|null>(null);
  const [guiding,setGuiding]=useState(false);
+ const [noticeHidden,setNoticeHidden]=useState(false);
  const guidedAbort=useRef<AbortController|null>(null);
  const modelAbort=useRef<AbortController|null>(null),stopSpeech=useRef<(()=>void)|null>(null);
  useEffect(()=>{
   let mounted=true;
-  void checkGuidedModel().then(state=>{if(mounted)setLocalStatus(current=>current==='checking'?state:current)});
+  initialAvailability.current=checkGuidedModel();
+  void browser.storage.local.get(PRIVACY_NOTICE_KEY).then(values=>{
+   if(mounted&&values[PRIVACY_NOTICE_KEY]===true)setNoticeHidden(true);
+  }).catch(()=>{});
   return()=>{mounted=false;modelAbort.current?.abort();guidedAbort.current?.abort();stopSpeech.current?.()};
  },[]);
+ function changeNotice(hidden:boolean){
+  setNoticeHidden(hidden);
+  void browser.storage.local.set({[PRIVACY_NOTICE_KEY]:hidden}).catch(()=>{});
+ }
  async function prepare(){
   if(preparing||listening||!command.trim())return;
-  setCloudReview(null);setSiteReview(null);setPreparing(true);setError('');setDraftNotice('');
+  setSiteReview(null);setPreparing(true);setError('');setDraftNotice('');
   const controller=new AbortController();modelAbort.current=controller;
   const timer=setTimeout(()=>controller.abort(),10000);
   try{
@@ -51,7 +58,7 @@ function App(){
  }
  async function dictate(){
   if(listening){stopSpeech.current?.();return}
-  setCloudReview(null);setSiteReview(null);setListening(true);setError('');setDraftNotice('');
+  setSiteReview(null);setListening(true);setError('');setDraftNotice('');
   try{stopSpeech.current=await startLocalDictation(
    text=>{setCommand(text);setDraftNotice('Dictated on this device. Review the draft before running it.')},
    reason=>{stopSpeech.current=null;setListening(false);if(reason)setError(reason)},
@@ -62,16 +69,15 @@ function App(){
   try{const r=await browser.runtime.sendMessage({type,...extra});if(!r?.ok)throw new Error(r?.error??'No response');setSession(r.session??null)}catch(e){setError(e instanceof Error?e.message:'Request failed')}finally{setPending(false)}
  }
  async function run(approveSite=false){
-  const goal=cloudReview?.goal??command.trim();
+  const goal=command.trim();
   if(!goal||guidedAbort.current||pending||preparing||listening||session&&!terminal(session))return;
-  if(!cloudReview&&(routeIntent(goal)||parseFormIntent(goal))){setCloudReview(null);await send('START',{command:goal});return}
-  const approved=cloudReview;
-  const site=!approved?parseSiteIntent(goal):null;
+  if(routeIntent(goal)||parseFormIntent(goal)){await send('START',{command:goal});return}
+  const site=parseSiteIntent(goal);
   if(site&&!approveSite){setSiteReview(site);return}
   setSiteReview(null);
   let plannerGoal=goal;
   let expectedSiteTab:number|undefined;
-  setCloudReview(null);
+
   const controller=new AbortController();
   guidedAbort.current=controller;setGuiding(true);setError('');setDraftNotice('');
   const timer=setTimeout(()=>controller.abort('timeout'),GUIDE_TIMEOUT);
@@ -104,30 +110,25 @@ function App(){
     if(!tab.active||tab.url!==site.url)throw new Error('The requested page changed while opening it');
     plannerGoal=site.goal;expectedSiteTab=destination.tabId;
    }
-   if(approved){
-    if(!await browser.permissions.request({origins:[PLANNER_HOST]}))throw new Error('Chrome did not grant access to the planner host.');
-    controller.signal.throwIfAborted();
-   }else{
-    const state=await checkGuidedModel();
-    controller.signal.throwIfAborted();
-    setLocalStatus(state);
-    if(state==='available'){
-     try{model=await createGuidedModel(controller.signal)}
-     catch{controller.signal.throwIfAborted();setLocalStatus('unavailable')}
-    }
-    if(!model){
-     const [tab]=await browser.tabs.query({active:true,currentWindow:true});
-     controller.signal.throwIfAborted();
-     if(tab?.id===undefined||!tab.url?.startsWith('https:'))throw new Error('Select a regular HTTPS page and activate the extension before running a guided task.');
-     if(expectedSiteTab!==undefined&&(tab.id!==expectedSiteTab||tab.url!==site?.url))throw new Error('The opened page changed');
-     setCloudReview({id:tab.id,url:tab.url,goal:plannerGoal});
-     return;
-    }
+   const [selected]=await browser.tabs.query({active:true,currentWindow:true});
+   controller.signal.throwIfAborted();
+   if(selected?.id===undefined||!selected.url?.startsWith('https:'))throw new Error('Select an HTTPS page and open the extension from its toolbar icon.');
+   if(expectedSiteTab!==undefined&&(selected.id!==expectedSiteTab||selected.url!==site?.url))throw new Error('The opened page changed');
+   const expectedTab={id:selected.id,url:selected.url};
+   // Start the readiness probe on panel load; refresh non-ready results because
+   // Chrome can finish a download while the panel is open.
+   const initial=await (initialAvailability.current??checkGuidedModel());
+   controller.signal.throwIfAborted();
+   const state=initial==='available'?initial:await checkGuidedModel();
+   controller.signal.throwIfAborted();
+   if(state==='available'){
+    try{model=await createGuidedModel(controller.signal)}
+    catch{controller.signal.throwIfAborted();initialAvailability.current=null}
    }
    const ready=model;
    await runGuided({
     begin:async()=>{
-     const r=await (approved?message('START_CLOUD',{mode:'cloud',expectedTab:{id:approved.id,url:approved.url}}):message('START_GUIDED',expectedSiteTab===undefined?{}:{expectedTab:{id:expectedSiteTab,url:site!.url}}));
+     const r=await (ready?message('START_GUIDED',{expectedTab}):message('START_CLOUD',{mode:'cloud',expectedTab}));
      return {sessionId:Session.parse(r.session).id,snapshot:GuidedSnapshot.parse(r.snapshot)};
     },
     step:async(sessionId,decision)=>{
@@ -139,9 +140,8 @@ function App(){
      return r.snapshot===undefined?undefined:GuidedSnapshot.parse(r.snapshot);
     },
     fail:async sessionId=>{await message('FAIL_GUIDED',{sessionId})},
-   }, input=>approved
-     ?askCloud(cloudPayload(plannerGoal,input.snapshot,input.previous),input.signal)
-     :ready!.propose(plannerGoal,input),controller.signal);
+   }, input=>ready?ready.propose(plannerGoal,input)
+     :askCloud(cloudPayload(plannerGoal,input.snapshot,input.previous),input.signal),controller.signal);
   }catch(e){
    if(controller.signal.reason==='timeout')setError('The guided task timed out. Try a narrower request.');
    else if(!controller.signal.aborted)setError(e instanceof Error?e.message:'The guided task stopped.');
@@ -150,29 +150,19 @@ function App(){
   }
  }
  function stop(){
-  if(cloudReview){setCloudReview(null);return}
   if(siteReview){setSiteReview(null);return}
   guidedAbort.current?.abort('stopped');
   void send('STOP');
  }
  useEffect(()=>{
-  const invalidateReview=()=>setCloudReview(null);
-  const onTabUpdated=(_tabId:number,change:{status?:string;url?:string})=>{
-   if(change.url||change.status==='loading')setCloudReview(review=>review?.id===_tabId?null:review);
-  };
-  browser.tabs.onActivated.addListener(invalidateReview);
-  browser.tabs.onUpdated.addListener(onTabUpdated);
   const listener=(changes:Record<string,{newValue?:unknown}>,area:string)=>{if(area==='session'&&changes['assistant.session']){const p=Session.safeParse(changes['assistant.session'].newValue);setSession(p.success?p.data:null)}};
   browser.storage.onChanged.addListener(listener);void send('GET_STATE');return()=>{
    browser.storage.onChanged.removeListener(listener);
-   browser.tabs.onActivated.removeListener(invalidateReview);
-   browser.tabs.onUpdated.removeListener(onTabUpdated);
   };
  },[]);
  const running=!!session&&!terminal(session);
  const busy=pending||running||guiding||preparing||listening;
- const localLabel=localStatus==='available'?'ready':localStatus==='checking'?'checking…':localStatus==='downloadable'||localStatus==='downloading'?'model not ready yet':'not available';
- const changeCommand=(value:string)=>{setCommand(value);setSiteReview(null);setDraftNotice('');setCloudReview(null);setError('')};
+ const changeCommand=(value:string)=>{setCommand(value);setSiteReview(null);setDraftNotice('');setError('')};
  const phase=guiding&&!running?'thinking':session?.phase??'idle';
  const result=guiding&&!running?'Preparing the task…':session?.message??'Your result will appear here.';
  return <main className="panel">
@@ -180,17 +170,22 @@ function App(){
    <div className="brand-row"><span className="mark"><Icon name="brand"/></span><span className="eyebrow">CHROME EXTENSION</span></div>
    <h1>Browser Assistant</h1>
    <p>Read pages and navigate with your approval.</p>
-   <p className="model-pill" data-ready={localStatus==='available'} aria-label="Chrome AI availability"><span/>Chrome AI: {localLabel}</p>
   </header>
 
-  <form className="composer card" noValidate onSubmit={e=>{e.preventDefault();if(!cloudReview&&!siteReview)void run()}}>
+  {!noticeHidden&&<aside className="card privacy-note" aria-label="Privacy note">
+   <Icon name="shield"/>
+   <p>Some tasks may send your command and visible page excerpts to our online service. Use public pages and non-confidential commands.</p>
+   <button className="quiet" type="button" onClick={()=>changeNotice(true)} aria-label="Hide privacy note">Hide</button>
+  </aside>}
+
+  <form className="composer card" noValidate onSubmit={e=>{e.preventDefault();if(!siteReview)void run()}}>
    <label htmlFor="command">Command</label>
    <textarea id="command" maxLength={1000} placeholder="What would you like to do on this page?" value={command} disabled={preparing||listening||guiding||running} onChange={e=>changeCommand(e.target.value)}/>
    <div className="examples" aria-label="Example commands">
     {QUICK_COMMANDS.map(label=><button className="chip" key={label} type="button" disabled={busy} onClick={()=>changeCommand(label==='YouTube in new tab'?'Open YouTube in a new tab':label)}>{label}</button>)}
    </div>
    <div className="composer-actions">
-    {!cloudReview&&!siteReview&&<button className="primary" type="submit" disabled={busy||!command.trim()}>Run task <Icon name="arrow"/></button>}
+    {!siteReview&&<button className="primary" type="submit" disabled={busy||!command.trim()}>Run task <Icon name="arrow"/></button>}
     <button className="secondary mic" type="button" disabled={pending||running||guiding||preparing} onClick={()=>void dictate()} title={listening?'Stop listening':'Dictate locally (English)'} aria-label={listening?'Stop listening':'Dictate locally (English)'}><Icon name="mic"/>{listening?'Stop listening':'Dictate'}</button>
    </div>
    {draftNotice&&<p className="muted helper">{draftNotice}</p>}
@@ -198,19 +193,10 @@ function App(){
 
   {siteReview&&<section className="card review" aria-label="Website access review">
    <h2>Open this site in a new tab?</h2><p className="target">{siteReview.url}</p>
-   <p className="muted">Chrome will ask for access to this site only. You can revoke it in the extension’s settings. This does not approve cloud sharing.</p>
+   <p className="muted">Chrome may ask for access to this site only. You can revoke it in the extension’s settings.</p>
    <button className="primary full" type="button" disabled={busy} onClick={()=>void run(true)}>Open and continue <Icon name="arrow"/></button>
    <button className="quiet full" type="button" onClick={()=>setSiteReview(null)}>Cancel</button>
   </section>}
-  {cloudReview&&<section className="card review" aria-label="Cloud sharing review">
-   <div className="section-label"><Icon name="shield"/> Cloud sharing review</div>
-   <h2>Use the cloud planner?</h2>
-   <p>Chrome AI isn’t ready. For this task, your command and limited visible excerpts from <strong>{new URL(cloudReview.url).origin}</strong> will go to <strong>{PLANNER_ORIGIN}</strong> and its model provider.</p>
-   <p className="muted">Use public pages and non-confidential commands only. Form field labels and values are not sent; redaction of visible text is not guaranteed.</p>
-   <button className="primary full" type="button" disabled={busy} onClick={()=>void run()}>Approve and continue <Icon name="arrow"/></button>
-   <button className="quiet full" type="button" onClick={()=>setCloudReview(null)}>Cancel sharing</button>
-  </section>}
-
   <section className="card result" aria-labelledby="result-title">
    <div className="result-head"><h2 id="result-title">Task result</h2>
     {(running||guiding)&&<button className="quiet stop" type="button" onClick={stop}><Icon name="stop"/>Stop task</button>}
@@ -241,11 +227,12 @@ function App(){
   <details className="card settings">
    <summary><Icon name="brand"/><span>More tools</span></summary>
    <div className="settings-body tool-stack">
+    {noticeHidden&&<button className="secondary" type="button" onClick={()=>changeNotice(false)}>Show privacy note</button>}
     <button className="secondary" type="button" disabled={pending} onClick={()=>void send('SHOW_OVERLAY')}>Show assistant on page</button>
-    <button className="secondary" type="button" disabled={busy||!command.trim()} onClick={()=>void prepare()}>{preparing?'Preparing…':'Suggest supported command on device'}</button>
+    <button className="secondary" type="button" disabled={busy||!command.trim()} onClick={()=>void prepare()}>{preparing?'Preparing…':'Suggest a supported command'}</button>
    </div>
   </details>
-  <footer><Icon name="shield"/><span>Local-first. You approve any cloud sharing and reviewed actions.</span></footer>
+  <footer><Icon name="shield"/><span>You review links and form changes before they happen.</span></footer>
  </main>;
 }
 createRoot(document.getElementById('root')!).render(<App/>);

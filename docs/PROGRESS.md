@@ -55,7 +55,18 @@ A built-in skill now handles “Open a new tab for YouTube” and “Open YouTub
 
 ## Guided navigation and form review
 
-- “Open docs.nestjs.com in a new tab, then find the Guards guide and explain it” opens the literal HTTPS address, asks for that site's Chrome access, and continues using the same new tab. No model can supply an arbitrary address. The original tab remains open. Cloud sharing is a separate approval and is bound to the selected tab and origin.
+- “Open docs.nestjs.com in a new tab, then find the Guards guide and explain it” opens the literal HTTPS address, asks for that site's Chrome access, and continues using the same new tab. No model can supply an arbitrary address. The original tab remains open. The task is bound to the selected tab and origin.
 - The model gets a fresh view after each verified scroll or reviewed same-origin link. Local AI can also propose expanding a native disclosure. Link/disclosure actions pause for review; redirects, stale targets, revisited pages, changing tabs, time/step limits and cancellation stop the workflow.
 - “Fill "Full name" with "Sachin"; "Message" with "Hello"” creates a local preview without any AI or network call. Review the origin and each value, then fill eligible empty text controls. Credentials, file uploads, CAPTCHA, arbitrary button clicks and form submission remain manual.
 - Required Chrome permissions and the Railway planner API are unchanged. Exact-site Chrome grants are requested at runtime and are revocable in the extension settings. Do not request broad site access at install time.
+
+## Single-click routing
+
+The side panel checks Chrome AI readiness when it opens, without displaying the
+model name or a readiness badge. Run task uses a built-in skill when available,
+otherwise prefers Chrome AI and uses the online planner if it is not ready or
+cannot initialize. The dismissible notice on panel load explains what may leave the device; the
+sidebar remembers the choice and More tools can show it again.
+The backend host is fixed and declared at install time; website access and
+individual link/form approvals remain separate. Cloud excerpts still exclude
+form labels and values, and cloud tasks are blocked in incognito.

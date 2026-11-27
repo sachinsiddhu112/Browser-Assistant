@@ -197,13 +197,14 @@ export default defineBackground(()=>{
     if(req.expectedTab&&(req.expectedTab.id!==tabId||req.expectedTab.url!==tab.url||!tab.active)){
      throw new Error('The active page changed. Start the task again.');
     }
-    if(!tab.url?.startsWith('https:'))throw new Error('The AI reader is limited to HTTPS pages');
+    if(!tab.url?.startsWith('https:'))throw new Error('The reader is limited to HTTPS pages');
+    if(req.mode==='cloud'&&tab.incognito)throw new Error('Online assistance is disabled in incognito tabs.');
     const [captured]=await browser.scripting.executeScript({target:{tabId},func:readGuidedViewport});
     const after=await browser.tabs.get(tabId);
     if(!captured?.documentId||!after.active||after.url!==tab.url)throw new Error('The page changed while reading it; start again');
     const {snapshot,fields,links,disclosures}=splitCapture(captured.result);
     const {canScrollDown,canScrollUp}=snapshot;
-    const session=await write({id:crypto.randomUUID(),tabId,command:req.mode==='cloud'?'Cloud task':'On-device task',phase:'thinking',message:req.mode==='cloud'?'Reading the approved page for cloud planning':'Reading this page on your device',
+    const session=await write({id:crypto.randomUUID(),tabId,command:'Guided task',phase:'thinking',message:'Reading this page',
      guided:{documentId:captured.documentId,url:tab.url,expiresAt:Date.now()+GUIDED_TIMEOUT_MS,steps:0,visited:[tab.url],fields,links,disclosures,mode:req.mode,canScrollDown,canScrollUp}});
     return {session,snapshot};
    }
