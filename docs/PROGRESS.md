@@ -66,7 +66,7 @@ The side panel checks Chrome AI readiness when it opens, without displaying the
 model name or a readiness badge. Run task uses a built-in skill when available,
 otherwise prefers Chrome AI and uses the online planner if it is not ready or
 cannot initialize. The dismissible notice on panel load explains what may leave the device; the
-sidebar remembers the choice and More tools can show it again.
+notice comes back when the panel is reopened.
 The backend host is fixed and declared at install time; website access and
 individual link/form approvals remain separate. Cloud excerpts still exclude
 form labels and values, and cloud tasks are blocked in incognito.

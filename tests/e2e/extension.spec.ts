@@ -249,9 +249,6 @@ test('one Run task click uses automatic fallback and retains link review',async(
   expect(await calls()).toHaveLength(3);
   await panel.reload();
   await expect(panel.getByRole('status')).toContainText('Read the public guide.');
-  await expect(panel.getByRole('complementary',{name:'Privacy note'})).toHaveCount(0);
-  await panel.getByText('More tools',{exact:true}).click();
-  await panel.getByRole('button',{name:'Show privacy note'}).click();
   await expect(panel.getByRole('complementary',{name:'Privacy note'})).toBeVisible();
  }finally{await context.close();await rm(dir,{recursive:true,force:true})}
 });

@@ -10,7 +10,6 @@ import {runGuided} from '../../core/guided-planner';
 import {checkGuidedModel,createGuidedModel,GUIDE_TIMEOUT,type LocalModelAvailability} from '../../core/guided-model';
 import {askCloud,cloudPayload} from '../../core/cloud-client';
 import './style.css';
-const PRIVACY_NOTICE_KEY='assistant.privacyNoticeHidden';
 const QUICK_COMMANDS=['Scroll down','Inspect page','YouTube in new tab'];
 function Icon({name}:{name:'brand'|'mic'|'arrow'|'shield'|'settings'|'stop'}){
  const paths={
@@ -33,17 +32,9 @@ function App(){
  const guidedAbort=useRef<AbortController|null>(null);
  const modelAbort=useRef<AbortController|null>(null),stopSpeech=useRef<(()=>void)|null>(null);
  useEffect(()=>{
-  let mounted=true;
   initialAvailability.current=checkGuidedModel();
-  void browser.storage.local.get(PRIVACY_NOTICE_KEY).then(values=>{
-   if(mounted&&values[PRIVACY_NOTICE_KEY]===true)setNoticeHidden(true);
-  }).catch(()=>{});
-  return()=>{mounted=false;modelAbort.current?.abort();guidedAbort.current?.abort();stopSpeech.current?.()};
+  return()=>{modelAbort.current?.abort();guidedAbort.current?.abort();stopSpeech.current?.()};
  },[]);
- function changeNotice(hidden:boolean){
-  setNoticeHidden(hidden);
-  void browser.storage.local.set({[PRIVACY_NOTICE_KEY]:hidden}).catch(()=>{});
- }
  async function prepare(){
   if(preparing||listening||!command.trim())return;
   setSiteReview(null);setPreparing(true);setError('');setDraftNotice('');
@@ -175,7 +166,7 @@ function App(){
   {!noticeHidden&&<aside className="card privacy-note" aria-label="Privacy note">
    <Icon name="shield"/>
    <p>Some tasks may send your command and visible page excerpts to our online service. Use public pages and non-confidential commands.</p>
-   <button className="quiet" type="button" onClick={()=>changeNotice(true)} aria-label="Hide privacy note">Hide</button>
+   <button className="quiet" type="button" onClick={()=>setNoticeHidden(true)} aria-label="Hide privacy note">Hide</button>
   </aside>}
 
   <form className="composer card" noValidate onSubmit={e=>{e.preventDefault();if(!siteReview)void run()}}>
@@ -227,7 +218,6 @@ function App(){
   <details className="card settings">
    <summary><Icon name="brand"/><span>More tools</span></summary>
    <div className="settings-body tool-stack">
-    {noticeHidden&&<button className="secondary" type="button" onClick={()=>changeNotice(false)}>Show privacy note</button>}
     <button className="secondary" type="button" disabled={pending} onClick={()=>void send('SHOW_OVERLAY')}>Show assistant on page</button>
     <button className="secondary" type="button" disabled={busy||!command.trim()} onClick={()=>void prepare()}>{preparing?'Preparing…':'Suggest a supported command'}</button>
    </div>
