@@ -339,6 +339,9 @@ test('research selects two sites, compares verified evidence and speaks the resu
    globals.fixture={spoken:[],requests:[],grants:[],cancelled:0};
    Object.defineProperty(globalThis,'LanguageModel',{configurable:true,value:{availability:async()=> 'unavailable'}});
    globals.chrome.permissions.request=async({origins}:{origins:string[]})=>{globals.fixture.grants.push(origins);return true};
+   Object.defineProperty(globalThis,'SpeechSynthesisUtterance',{configurable:true,value:class{
+    voice:unknown;lang='';constructor(public text:string){}
+   }});
    Object.defineProperty(globalThis,'speechSynthesis',{configurable:true,value:{
     addEventListener:()=>{},removeEventListener:()=>{},
     getVoices:()=>[{localService:true,lang:'en-US',name:'Local test voice'}],
@@ -354,6 +357,7 @@ test('research selects two sites, compares verified evidence and speaks the resu
   const get=()=>panel.evaluate(()=>(globalThis as any).fixture);
   await expect(panel.getByRole('button',{name:'Speak results'})).toHaveAttribute('aria-pressed','false');
   await panel.getByRole('button',{name:'Speak results'}).evaluate((button:HTMLButtonElement)=>button.click());
+  await expect(panel.getByRole('button',{name:'Speak results'})).toHaveAttribute('aria-pressed','true');
   await panel.getByRole('textbox',{name:'Command'}).fill('Compare request validation in two frameworks');
   await source.bringToFront();
   await panel.evaluate(()=>document.querySelector('form')?.requestSubmit());
