@@ -31,32 +31,22 @@ test('extension local navigation and scrolling',async()=>{
   await expect.poll(async()=> (await send('GET_STATE')).session?.phase).toBe('success');
   await expect(site.getByRole('searchbox')).toHaveValue('NestJS');
   await expect(site.locator('input[type=password]')).toHaveValue('');
-  await context.route('https://www.youtube.com/',route=>route.fulfill({contentType:'text/html',body:'<h1>YouTube new tab fixture</h1>'}));
-  await panel.evaluate(()=>{globalThis.fetch=async()=>{throw new Error('The local command must not call a planner')}});
-  await panel.getByRole('textbox',{name:'Command'}).fill('Open a new tab for YouTube');
-  await site.bringToFront();
-  const newTab=context.waitForEvent('page');
-  await panel.evaluate(()=>document.querySelector('form')?.requestSubmit());
-  const opened=await newTab;
-  await expect(opened).toHaveURL('https://www.youtube.com/');
-  await expect(site).toHaveURL('https://example.com/');
-  await expect(panel.getByRole('status')).toContainText('Opened YouTube in a new tab');
-  await opened.close();
-  await site.bringToFront();
-  await site.route('https://www.youtube.com/**',route=>route.fulfill({contentType:'text/html',body:'<html><body><h1>YouTube fixture</h1></body></html>'}));
+  await context.route(/^https:\/\/www\.youtube\.com\//,route=>{
+   const {pathname}=new URL(route.request().url());
+   const body=pathname==='/results'?`<html><body>
+   <ytd-video-renderer><a id="video-title" href="/watch?v=abcdefghijk">First song</a></ytd-video-renderer>
+   <ytd-video-renderer><a id="video-title" href="/watch?v=lmnopqrstuv">Second song</a></ytd-video-renderer>
+   <ytd-video-renderer hidden><a id="video-title" href="/watch?v=zyxwvutsrqp">Hidden song</a></ytd-video-renderer>
+   <ytd-video-renderer><a id="video-title" href="https://attacker.invalid/watch?v=zyxwvutsrqp">Off-site song</a></ytd-video-renderer>
+  </body></html>`:pathname==='/watch'?'<h1>Video fixture</h1>':'<h1>YouTube fixture</h1>';
+   return route.fulfill({contentType:'text/html',body});
+  });
   expect((await send('START',{command:'Open YouTube'})).ok).toBe(true);
   await expect.poll(async()=> (await send('GET_STATE')).session?.phase).toBe('success');
   await expect(site).toHaveURL('https://www.youtube.com/');
   expect((await send('START',{command:'Go back'})).ok).toBe(true);
   await expect.poll(async()=> (await send('GET_STATE')).session?.phase).toBe('success');
   await expect(site).toHaveURL('https://example.com/');
-  await site.route('https://www.youtube.com/results?*',route=>route.fulfill({contentType:'text/html',body:`<html><body>
-   <ytd-video-renderer><a id="video-title" href="/watch?v=abcdefghijk">First song</a></ytd-video-renderer>
-   <ytd-video-renderer><a id="video-title" href="/watch?v=lmnopqrstuv">Second song</a></ytd-video-renderer>
-   <ytd-video-renderer hidden><a id="video-title" href="/watch?v=zyxwvutsrqp">Hidden song</a></ytd-video-renderer>
-   <ytd-video-renderer><a id="video-title" href="https://attacker.invalid/watch?v=zyxwvutsrqp">Off-site song</a></ytd-video-renderer>
-  </body></html>`}));
-  await site.route('https://www.youtube.com/watch?*',route=>route.fulfill({contentType:'text/html',body:'<html><body><h1>Video fixture</h1></body></html>'}));
   const started=await send('START',{command:'Play Example on YouTube'});
   expect(started.ok).toBe(true);
   await expect.poll(async()=> (await send('GET_STATE')).session?.phase).toBe('waiting-confirmation');
@@ -78,6 +68,15 @@ test('extension local navigation and scrolling',async()=>{
   await expect(site).toHaveURL('https://www.youtube.com/results?search_query=Example');
   await panel.reload();
   await expect(panel.getByRole('status')).toContainText('cancelled');
+  await panel.evaluate(()=>{globalThis.fetch=async()=>{throw new Error('The local command must not call a planner')}});
+  await panel.getByRole('textbox',{name:'Command'}).fill('Open a new tab for YouTube');
+  await site.bringToFront();
+  const newTab=context.waitForEvent('page');
+  await panel.evaluate(()=>document.querySelector('form')?.requestSubmit());
+  const opened=await newTab;
+  await expect(opened).toHaveURL('https://www.youtube.com/');
+  await expect(site).toHaveURL('https://www.youtube.com/results?search_query=Example');
+  await expect(panel.getByRole('status')).toContainText('Opened YouTube in a new tab');
  }finally{await context.close();await rm(dir,{recursive:true,force:true})}
 });
 
