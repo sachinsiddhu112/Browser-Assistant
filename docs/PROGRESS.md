@@ -116,3 +116,7 @@ scrolling to instant and remove nonessential side-panel and overlay motion.
 Fast-path supported commands stay local. For unfamiliar wording, the model first classifies the command without page content (Chrome when available, otherwise the private backend's existing public request budget). The classifier can select a predefined browser skill (including scrolling, history, tabs, search and playback), research/compare, or reviewed profile/application workflow, or point to an HTTPS destination the user supplied. Destinations outside the fixed built-ins still require website review. Page answers and clarification are now distinct from completed actions. No runtime permissions or provider credentials were added.
 
 Deploy the backward-compatible planner update before relying on cloud intent routing. Older backends still support page answers; the explicit YouTube URL repair and on-device intent routing do not require a backend update.
+
+### v0.7.2: YouTube search-to-play handoff
+
+Recognize the same visible search query despite equivalent URL encoding or extra presentation parameters. Read verified, visible video titles from multiple result layouts and keep the user's choice step. If there is no supported match, leave the search open and report that nothing played. After selection, make at most one standard player play request and verify that the selected non-ad video advances. If playback is blocked, unverified or muted, explain the manual step. This is an extension-only update.

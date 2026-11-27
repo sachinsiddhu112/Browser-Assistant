@@ -1,3 +1,4 @@
+import {inspectYouTubePlayer,readYouTubeChoices,sameYouTubeDestination} from '../core/youtube';
 import {inspectProfileForm,matchSavedDetails,Profile,ProfileTarget,ProfileValuesKey,emptyProfile} from '../core/profile';
 import {parseFormIntent} from '../core/form-intent';
 import {parseSiteIntent} from '../core/site-intent';
@@ -26,8 +27,8 @@ export default defineBackground(()=>{
  }
  async function inject(tabId:number){await browser.scripting.executeScript({target:{tabId},files:['/overlay.js']})}
  async function step<T>(s:Session,fn:()=>Promise<T>):Promise<T>{return serial(async()=>{const c=await read();if(c?.id!==s.id||terminal(c))throw new Error('Task stopped');return fn()})}
- async function finish(s:Session,phase:'success'|'error',message:string){await serial(async()=>{const c=await read();if(c?.id===s.id&&!terminal(c))await write({...c,phase,message,videoApproval:undefined,guided:undefined,draft:undefined,review:undefined})})}
- async function waitFor<T>(s:Session,fn:()=>Promise<T|undefined>):Promise<T>{for(let i=0;i<40;i++){const r=await step(s,fn);if(r!==undefined)return r;await new Promise(r=>setTimeout(r,250))}throw new Error('Timed out verifying browser state')}
+ async function finish(s:Session,phase:'success'|'error'|'needs-input',message:string){await serial(async()=>{const c=await read();if(c?.id===s.id&&!terminal(c))await write({...c,phase,message,videoApproval:undefined,guided:undefined,draft:undefined,review:undefined})})}
+ async function waitFor<T>(s:Session,fn:()=>Promise<T|undefined>,polls=40):Promise<T>{for(let i=0;i<polls;i++){const r=await step(s,fn);if(r!==undefined)return r;await new Promise(r=>setTimeout(r,250))}throw new Error('Timed out verifying browser state')}
  async function navigate(s:Session,url:string,expectedSource?:string){
   if(!allowedNavigation(url))throw new Error('Navigation denied');
   await step(s,async()=>{
@@ -75,27 +76,32 @@ export default defineBackground(()=>{
    await finish(s,'success','Opened YouTube in a new tab');return;
   }
   if(action.type==='navigate'){
-   await navigate(s,action.url);
-   if(new URL(action.url).pathname==='/results'){
-    const choices=await waitFor(s,async()=>{
-     const t=await browser.tabs.get(s.tabId);if(t.url!==action.url||!t.active)throw new Error('Search tab changed');
-     const [r]=await browser.scripting.executeScript({target:{tabId:s.tabId},func:()=>{
-      if(location.origin!=='https://www.youtube.com'||location.pathname!=='/results')return [];
-      const choices:{id:string;title:string}[]=[];
-      for(const a of document.querySelectorAll<HTMLAnchorElement>('ytd-video-renderer a#video-title[href]')){
-       if(!a.getClientRects().length||getComputedStyle(a).visibility!=='visible'||a.closest('[hidden],[inert],[aria-hidden="true"]'))continue;
-       const u=new URL(a.href),id=u.searchParams.get('v');
-       const title=(a.textContent??'').replace(/\s+/g,' ').trim().slice(0,160);
-       if(u.origin==='https://www.youtube.com'&&u.pathname==='/watch'&&id&&/^[\w-]{11}$/.test(id)&&title&&!choices.some(x=>x.id===id))choices.push({id,title});
-       if(choices.length===4)break;
-      }
-      return choices;
-     }});
-     const choices=r?.result??[];return choices.length?choices:undefined;
-    });
-    await step(s,async()=>write({...s,phase:'waiting-confirmation',message:'Choose a YouTube result to play.',videoApproval:VideoApproval.parse({sourceUrl:action.url,expiresAt:Date.now()+120_000,choices})}));
+   const query=new URL(action.url).searchParams.get('search_query');
+   if(query&&new URL(action.url).pathname==='/results'){
+    await step(s,async()=>{await browser.tabs.update(s.tabId,{url:action.url})});
+    let searchSeen=false;
+    try{
+     const result=await waitFor(s,async()=>{
+      const t=await browser.tabs.get(s.tabId);
+      if(!t.active)throw new Error('The active tab changed. Switch back to YouTube and run the task again.');
+      if(!sameYouTubeDestination(t.url,action.url))return;
+      searchSeen=true;
+      const [r]=await browser.scripting.executeScript({target:{tabId:s.tabId},func:readYouTubeChoices,args:[query]});
+      const after=await browser.tabs.get(s.tabId);
+      if(!after.active||!sameYouTubeDestination(after.url,action.url))throw new Error('The search changed. Start a new task.');
+      return r?.result?.length&&after.url?{choices:r.result,sourceUrl:after.url}:undefined;
+     },68);
+     await step(s,async()=>write({...s,phase:'waiting-confirmation',message:'Choose a YouTube result to play.',videoApproval:VideoApproval.parse({...result,expiresAt:Date.now()+120_000})}));
+    }catch(e){
+     if(searchSeen&&e instanceof Error&&e.message==='Timed out verifying browser state')
+      await finish(s,'needs-input','YouTube search is open, but I could not find a playable result. Choose the video on YouTube. Nothing started playing.');
+     else if(e instanceof Error&&e.message==='Timed out verifying browser state')
+      await finish(s,'error','Could not verify that the requested YouTube search loaded. Check the YouTube tab; no video was selected.');
+     else throw e;
+    }
     return;
    }
+   await navigate(s,action.url);
    await finish(s,'success','Page opened');return;
   }
   if(action.type==='go_back'){
@@ -144,17 +150,38 @@ export default defineBackground(()=>{
  }
  async function playVideo(s:Session,url:string,sourceUrl:string){
   try{
-   await navigate(s,url,sourceUrl);
+   if(!allowedNavigation(url))throw new Error('Navigation denied');
+   const id=new URL(url).searchParams.get('v')!;
+   await step(s,async()=>{
+    const tab=await browser.tabs.get(s.tabId);
+    if(!tab.active||!sameYouTubeDestination(tab.url,sourceUrl))throw new Error('Search tab changed before playback');
+    await browser.tabs.update(s.tabId,{url});
+   });
+   let opened=false,attempted=false,lastTime:number|undefined;
    try{
-    await waitFor(s,async()=>{
-     const t=await browser.tabs.get(s.tabId);if(t.url!==url||!t.active)throw new Error('Video tab changed');
-     const [r]=await browser.scripting.executeScript({target:{tabId:s.tabId},func:()=>{
-      const video=document.querySelector<HTMLVideoElement>('video');
-      return !!video&&!video.paused&&!video.ended&&video.currentTime>0&&!document.querySelector('.html5-video-player.ad-showing');
-     }});return r?.result?true:undefined;
+    const result=await waitFor(s,async()=>{
+     const tab=await browser.tabs.get(s.tabId);
+     if(!tab.active)throw new Error('The active tab changed');
+     if(!sameYouTubeDestination(tab.url,url))return;
+     opened=true;
+     const [r]=await browser.scripting.executeScript({target:{tabId:s.tabId},func:inspectYouTubePlayer,args:[id,!attempted]});
+     const v=r?.result;
+     if(v?.state==='blocked')return 'blocked';
+     if(v?.state==='attempted')attempted=true;
+     if(v?.state==='running'){
+      const advanced=lastTime!==undefined&&v.time>lastTime+0.05;
+      lastTime=v.time;
+      if(advanced)return v.muted||tab.mutedInfo?.muted?'muted':'playing';
+     }else lastTime=undefined;
     });
-   }catch{await finish(s,'success','Opened the selected video, but playback was not verified. Press Play on YouTube if needed.');return}
-   await finish(s,'success','Selected YouTube video is playing');
+    if(result==='playing')await finish(s,'success','Selected YouTube video is playing');
+    else if(result==='muted')await finish(s,'needs-input','The video is playing muted. Unmute it on YouTube to listen.');
+    else await finish(s,'needs-input','The video opened, but Chrome blocked autoplay. Press Play on YouTube.');
+   }catch(e){
+    if(!(e instanceof Error)||e.message!=='Timed out verifying browser state')throw e;
+    if(opened)await finish(s,'needs-input','Opened the selected video, but playback was not verified. Press Play on YouTube if needed.');
+    else await finish(s,'error','Could not verify that the selected video opened. Check the YouTube tab.');
+   }
   }catch(e){await finish(s,'error',e instanceof Error?e.message:'Could not open the selected video')}
  }
  async function verifyReviewedLink(s:Session,url:string){
@@ -365,7 +392,7 @@ export default defineBackground(()=>{
     const approval=s?.videoApproval;
     if(s?.id!==req.sessionId||s.phase!=='waiting-confirmation'||!approval)throw new Error('There is no matching pending choice');
     const tab=await browser.tabs.get(s.tabId);
-    if(approval.expiresAt<=Date.now()||tab.url!==approval.sourceUrl||!tab.active){
+    if(approval.expiresAt<=Date.now()||!sameYouTubeDestination(tab.url,approval.sourceUrl)||!tab.active){
      return write({...s,videoApproval:undefined,phase:'error',message:'The search changed or the choice expired. Start a new task.'});
     }
     if(!approval.choices.some(c=>c.id===req.videoId))throw new Error('That video was not offered for this task');
