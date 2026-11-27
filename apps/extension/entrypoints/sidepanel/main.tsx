@@ -2,14 +2,21 @@ import React,{useEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Session,terminal} from '../../core/session';
 import {startLocalDictation,suggestOnDevice} from '../../core/on-device';
+import {parseFormIntent} from '../../core/form-intent';
+import {parseSiteIntent} from '../../core/site-intent';
 import {routeIntent} from '../../core/intent';
 import {GuidedSnapshot} from '../../core/guided-contract';
 import {runGuided} from '../../core/guided-planner';
 import {checkGuidedModel,createGuidedModel,GUIDE_TIMEOUT,type LocalModelAvailability} from '../../core/guided-model';
 import {askCloud,cloudPayload} from '../../core/cloud-client';
+import {createResultSpeech} from '../../core/result-speech';
+import {parseResearch} from '../../core/research';
+import {ResearchCards,useResearch} from './research-ui';
+import {applicationIntent,isProfileCommand} from '../../core/application-intent';
+import {ApplicationCards,SavedDetails,useApplication} from './application-ui';
 import './style.css';
-import {PLANNER_HOST,PLANNER_ORIGIN} from '../../core/cloud-config';
-const QUICK_COMMANDS=['Scroll down','Inspect page','Open YouTube'];
+const SPEAK_KEY='assistant.speakResults';
+const QUICK_COMMANDS=['Scroll down','Inspect page','YouTube in new tab'];
 function Icon({name}:{name:'brand'|'mic'|'arrow'|'shield'|'settings'|'stop'}){
  const paths={
   brand:<><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18M11 9v11m4-6 2 2-2 2"/></>,
@@ -22,21 +29,71 @@ function Icon({name}:{name:'brand'|'mic'|'arrow'|'shield'|'settings'|'stop'}){
  return <svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
 }
 function App(){
+ const research=useResearch();
+ const [speakingEnabled,setSpeakingEnabled]=useState(false),[speechNotice,setSpeechNotice]=useState('');
+ const [speaker]=useState(createResultSpeech);
+ const [voicesRevision,setVoicesRevision]=useState(0);
+ const lastSpoken=useRef(''),ignoredSession=useRef(''),speechArmed=useRef(false),speechPreferenceTouched=useRef(false);
+ const [draftValues,setDraftValues]=useState<string[]>([]);
+ const [draftSkipped,setDraftSkipped]=useState<number[]>([]);
  const [session,setSession]=useState<Session|null>(null),[command,setCommand]=useState(''),[error,setError]=useState(''),[pending,setPending]=useState(false);
+ const application=useApplication(setSession);
  const [preparing,setPreparing]=useState(false),[listening,setListening]=useState(false),[draftNotice,setDraftNotice]=useState('');
- const [cloudReview,setCloudReview]=useState<{id:number;url:string}|null>(null);
- const [localStatus,setLocalStatus]=useState<LocalModelAvailability|'checking'>('checking');
+ const [siteReview,setSiteReview]=useState<ReturnType<typeof parseSiteIntent>>(null);
+ const initialAvailability=useRef<Promise<LocalModelAvailability>|null>(null);
  const [guiding,setGuiding]=useState(false);
+ const [noticeHidden,setNoticeHidden]=useState(false);
  const guidedAbort=useRef<AbortController|null>(null);
  const modelAbort=useRef<AbortController|null>(null),stopSpeech=useRef<(()=>void)|null>(null);
  useEffect(()=>{
+  initialAvailability.current=checkGuidedModel();
+  return()=>{modelAbort.current?.abort();guidedAbort.current?.abort();stopSpeech.current?.();speaker.cancel()};
+ },[speaker]);
+ useEffect(()=>{
   let mounted=true;
-  void checkGuidedModel().then(state=>{if(mounted)setLocalStatus(current=>current==='checking'?state:current)});
-  return()=>{mounted=false;modelAbort.current?.abort();guidedAbort.current?.abort();stopSpeech.current?.()};
+  void browser.storage.local.get(SPEAK_KEY).then(values=>{
+   if(mounted&&!speechPreferenceTouched.current)setSpeakingEnabled(values[SPEAK_KEY]===true);
+  }).catch(()=>{});
+  return()=>{mounted=false};
  },[]);
+ const answer=research.result?{id:research.result.id,text:research.result.answer}:
+  session?.phase==='success'?{id:session.id,text:session.message}:null;
+ function playResult(value:{id:string;text:string}){
+  const state=speaker.speak(value.text,{onError:code=>setSpeechNotice(code==='not-allowed'?'Playback needs a click. Use Play result.':'Could not play the installed voice.')});
+  if(state==='queued'){lastSpoken.current=value.id;setSpeechNotice('')}
+  if(state==='unavailable')setSpeechNotice('No on-device voice is available. You can still read the result.');
+ }
+ useEffect(()=>{
+  if(!speakingEnabled||!speechArmed.current||listening||!answer||(lastSpoken.current===answer.id||ignoredSession.current===answer.id))return;
+  playResult(answer);
+ },[speakingEnabled,listening,answer?.id,answer?.text,speaker,voicesRevision]);
+ useEffect(()=>{
+  if(!speakingEnabled)return;
+  const synth=globalThis.speechSynthesis;
+  const refresh=()=>{
+   if(speaker.hasLocalVoice()){
+    setSpeechNotice(notice=>notice.startsWith('No on-device voice')?'':notice);
+    setVoicesRevision(version=>version+1);
+   }
+  };
+  synth?.addEventListener?.('voiceschanged',refresh);
+  return()=>synth?.removeEventListener?.('voiceschanged',refresh);
+ },[speaker,speakingEnabled]);
+ function toggleSpeech(){
+  const enabled=!speakingEnabled;
+  speechPreferenceTouched.current=true;
+  setSpeechNotice('');setSpeakingEnabled(enabled);
+  void browser.storage.local.set({[SPEAK_KEY]:enabled}).catch(()=>{});
+  if(!enabled){speaker.cancel();return}
+  if(answer){speechArmed.current=true;lastSpoken.current='';ignoredSession.current=''}
+  if(!speaker.hasLocalVoice())setSpeechNotice('No on-device voice is available. You can still read the result.');
+ }
+ useEffect(()=>{
+  setDraftValues(session?.draft?.map(field=>field.value)??[]);setDraftSkipped([]);
+ },[session?.id,session?.draft?.length]);
  async function prepare(){
   if(preparing||listening||!command.trim())return;
-  setCloudReview(null);setPreparing(true);setError('');setDraftNotice('');
+  setSiteReview(null);setPreparing(true);setError('');setDraftNotice('');
   const controller=new AbortController();modelAbort.current=controller;
   const timer=setTimeout(()=>controller.abort(),10000);
   try{
@@ -48,7 +105,7 @@ function App(){
  }
  async function dictate(){
   if(listening){stopSpeech.current?.();return}
-  setCloudReview(null);setListening(true);setError('');setDraftNotice('');
+  speaker.cancel();setSiteReview(null);setListening(true);setError('');setDraftNotice('');
   try{stopSpeech.current=await startLocalDictation(
    text=>{setCommand(text);setDraftNotice('Dictated on this device. Review the draft before running it.')},
    reason=>{stopSpeech.current=null;setListening(false);if(reason)setError(reason)},
@@ -58,12 +115,26 @@ function App(){
   setPending(true);setError('');
   try{const r=await browser.runtime.sendMessage({type,...extra});if(!r?.ok)throw new Error(r?.error??'No response');setSession(r.session??null)}catch(e){setError(e instanceof Error?e.message:'Request failed')}finally{setPending(false)}
  }
- async function run(){
+ async function run(approveSite=false){
   const goal=command.trim();
-  if(!goal||guidedAbort.current||pending||preparing||listening||session&&!terminal(session))return;
-  if(routeIntent(goal)){setCloudReview(null);await send('START',{command:goal});return}
-  const approved=cloudReview;
-  setCloudReview(null);
+  if(!goal||guidedAbort.current||research.busy||research.review||application.busy||application.review||pending||preparing||listening||session&&!terminal(session))return;
+  speaker.cancel();speechArmed.current=true;lastSpoken.current=answer?.id??'';ignoredSession.current=session?.id??'';setSpeechNotice('');
+  if(isProfileCommand(goal)){research.clear();application.clear();await send('DRAFT_PROFILE');return}
+  const job=applicationIntent(goal);
+  if(job){research.clear();setSiteReview(null);setError('');await application.start(job);return}
+  application.clear();
+  try{
+   const plan=parseResearch(goal);
+   if(plan){setSiteReview(null);setError('');await research.start(plan);return}
+  }catch(e){setError(e instanceof Error?e.message:'Could not start research.');return}
+  research.clear();
+  if(routeIntent(goal)||parseFormIntent(goal)){await send('START',{command:goal});return}
+  const site=parseSiteIntent(goal);
+  if(site&&!approveSite){setSiteReview(site);return}
+  setSiteReview(null);
+  let plannerGoal=goal;
+  let expectedSiteTab:number|undefined;
+
   const controller=new AbortController();
   guidedAbort.current=controller;setGuiding(true);setError('');setDraftNotice('');
   const timer=setTimeout(()=>controller.abort('timeout'),GUIDE_TIMEOUT);
@@ -73,40 +144,61 @@ function App(){
    if(!r?.ok)throw new Error(r?.error??'Browser task did not respond');
    return r;
   };
+  async function awaitPhase(id:string,expected:'success'|'thinking'){
+   while(true){
+    controller.signal.throwIfAborted();
+    const r=await message('GET_STATE');
+    const s=Session.parse(r.session);
+    if(s.id!==id)throw new Error('The browser task changed');
+    if(s.phase===expected)return s;
+    if(terminal(s))throw new Error(s.message);
+    await new Promise(resolve=>setTimeout(resolve,180));
+   }
+  }
   try{
-   if(approved){
-    if(!await browser.permissions.request({origins:[PLANNER_HOST]}))throw new Error('Chrome did not grant access to the planner host.');
+   if(site){
+    const origin=site.origin+'/*';
+    if(!await browser.permissions.request({origins:[origin]}))throw new Error('Chrome did not grant access to '+site.origin);
     controller.signal.throwIfAborted();
-   }else{
-    const state=await checkGuidedModel();
-    controller.signal.throwIfAborted();
-    setLocalStatus(state);
-    if(state==='available'){
-     try{model=await createGuidedModel(controller.signal)}
-     catch{controller.signal.throwIfAborted();setLocalStatus('unavailable')}
-    }
-    if(!model){
-     const [tab]=await browser.tabs.query({active:true,currentWindow:true});
-     controller.signal.throwIfAborted();
-     if(tab?.id===undefined||!tab.url?.startsWith('https:'))throw new Error('Select a regular HTTPS page and activate the extension before running a guided task.');
-     setCloudReview({id:tab.id,url:tab.url});
-     return;
-    }
+    const opened=Session.parse((await message('START',{command:goal})).session);
+    const destination=await awaitPhase(opened.id,'success');
+    if(!site.goal)return;
+    const tab=await browser.tabs.get(destination.tabId);
+    if(!tab.active||tab.url!==site.url)throw new Error('The requested page changed while opening it');
+    plannerGoal=site.goal;expectedSiteTab=destination.tabId;
+   }
+   const [selected]=await browser.tabs.query({active:true,currentWindow:true});
+   controller.signal.throwIfAborted();
+   if(selected?.id===undefined||!selected.url?.startsWith('https:'))throw new Error('Select an HTTPS page and open the extension from its toolbar icon.');
+   if(expectedSiteTab!==undefined&&(selected.id!==expectedSiteTab||selected.url!==site?.url))throw new Error('The opened page changed');
+   const expectedTab={id:selected.id,url:selected.url};
+   // Start the readiness probe on panel load; refresh non-ready results because
+   // Chrome can finish a download while the panel is open.
+   const initial=await (initialAvailability.current??checkGuidedModel());
+   controller.signal.throwIfAborted();
+   const state=initial==='available'?initial:await checkGuidedModel();
+   controller.signal.throwIfAborted();
+   if(state==='available'){
+    try{model=await createGuidedModel(controller.signal)}
+    catch{controller.signal.throwIfAborted();initialAvailability.current=null}
    }
    const ready=model;
    await runGuided({
     begin:async()=>{
-     const r=await (approved?message('START_CLOUD',{mode:'cloud',expectedTab:approved}):message('START_GUIDED'));
+     const r=await (ready?message('START_GUIDED',{expectedTab}):message('START_CLOUD',{mode:'cloud',expectedTab}));
      return {sessionId:Session.parse(r.session).id,snapshot:GuidedSnapshot.parse(r.snapshot)};
     },
     step:async(sessionId,decision)=>{
-     const r=await message('STEP_GUIDED',{sessionId,decision});
+     let r=await message('STEP_GUIDED',{sessionId,decision});
+     if(decision.type==='open_link'||decision.type==='expand'){
+      await awaitPhase(sessionId,'thinking');
+      r=await message('RESUME_GUIDED',{sessionId});
+     }
      return r.snapshot===undefined?undefined:GuidedSnapshot.parse(r.snapshot);
     },
     fail:async sessionId=>{await message('FAIL_GUIDED',{sessionId})},
-   }, input=>approved
-     ?askCloud(cloudPayload(goal,input.snapshot,input.previous),input.signal)
-     :ready!.propose(goal,input),controller.signal);
+   }, input=>ready?ready.propose(plannerGoal,input)
+     :askCloud(cloudPayload(plannerGoal,input.snapshot,input.previous),input.signal),controller.signal);
   }catch(e){
    if(controller.signal.reason==='timeout')setError('The guided task timed out. Try a narrower request.');
    else if(!controller.signal.aborted)setError(e instanceof Error?e.message:'The guided task stopped.');
@@ -115,91 +207,98 @@ function App(){
   }
  }
  function stop(){
-  if(cloudReview){setCloudReview(null);return}
-  guidedAbort.current?.abort('stopped');
+  if(siteReview){setSiteReview(null);return}
+  speaker.cancel();guidedAbort.current?.abort('stopped');
   void send('STOP');
  }
  useEffect(()=>{
-  const invalidateReview=()=>setCloudReview(null);
-  const onTabUpdated=(_tabId:number,change:{status?:string;url?:string})=>{
-   if(change.url||change.status==='loading')setCloudReview(review=>review?.id===_tabId?null:review);
-  };
-  browser.tabs.onActivated.addListener(invalidateReview);
-  browser.tabs.onUpdated.addListener(onTabUpdated);
   const listener=(changes:Record<string,{newValue?:unknown}>,area:string)=>{if(area==='session'&&changes['assistant.session']){const p=Session.safeParse(changes['assistant.session'].newValue);setSession(p.success?p.data:null)}};
   browser.storage.onChanged.addListener(listener);void send('GET_STATE');return()=>{
    browser.storage.onChanged.removeListener(listener);
-   browser.tabs.onActivated.removeListener(invalidateReview);
-   browser.tabs.onUpdated.removeListener(onTabUpdated);
   };
  },[]);
  const running=!!session&&!terminal(session);
- const busy=pending||running||guiding||preparing||listening;
- const localLabel=localStatus==='available'?'ready':localStatus==='checking'?'checking…':localStatus==='downloadable'||localStatus==='downloading'?'model not ready yet':'not available';
- const changeCommand=(value:string)=>{setCommand(value);setDraftNotice('');setCloudReview(null);setError('')};
+ const busy=pending||running||guiding||preparing||listening||research.busy||!!research.review||application.busy||!!application.review;
+ const changeCommand=(value:string)=>{setCommand(value);research.clear();application.clear();setSiteReview(null);setDraftNotice('');setError('')};
  const phase=guiding&&!running?'thinking':session?.phase??'idle';
  const result=guiding&&!running?'Preparing the task…':session?.message??'Your result will appear here.';
  return <main className="panel">
   <header className="hero">
    <div className="brand-row"><span className="mark"><Icon name="brand"/></span><span className="eyebrow">CHROME EXTENSION</span></div>
    <h1>Browser Assistant</h1>
-   <p>Read and navigate the page you’re on.</p>
-   <p className="model-pill" data-ready={localStatus==='available'} aria-label="Chrome AI availability"><span/>Chrome AI: {localLabel}</p>
+   <p>Read pages and navigate with your approval.</p>
   </header>
 
-  <form className="composer card" noValidate onSubmit={e=>{e.preventDefault();if(!cloudReview)void run()}}>
+  <aside className="card privacy-note" aria-label="Privacy note" hidden={noticeHidden}>
+   <Icon name="shield"/>
+   <p>Some tasks may send your command and visible page excerpts to our online service. Use public pages and non-confidential commands.</p>
+   <button className="quiet" type="button" onClick={()=>setNoticeHidden(true)} aria-label="Hide privacy note">Hide</button>
+  </aside>
+
+  <form className="composer card" noValidate onSubmit={e=>{e.preventDefault();if(!siteReview)void run()}}>
    <label htmlFor="command">Command</label>
-   <textarea id="command" maxLength={1000} placeholder="What would you like to do on this page?" value={command} disabled={preparing||listening||guiding} onChange={e=>changeCommand(e.target.value)}/>
+   <textarea id="command" maxLength={1000} placeholder="Try Scroll down or Research a topic" value={command} disabled={preparing||listening||guiding||running||research.busy||application.busy} onChange={e=>changeCommand(e.target.value)}/>
    <div className="examples" aria-label="Example commands">
-    {QUICK_COMMANDS.map(label=><button className="chip" key={label} type="button" disabled={busy} onClick={()=>changeCommand(label)}>{label}</button>)}
+    {QUICK_COMMANDS.map(label=><button className="chip" key={label} type="button" disabled={busy} onClick={()=>changeCommand(label==='YouTube in new tab'?'Open YouTube in a new tab':label)}>{label}</button>)}
    </div>
    <div className="composer-actions">
-    {!cloudReview&&<button className="primary" type="submit" disabled={busy||!command.trim()}>Run task <Icon name="arrow"/></button>}
-    <button className="secondary mic" type="button" disabled={pending||running||guiding||preparing} onClick={()=>void dictate()} title={listening?'Stop listening':'Dictate locally (English)'} aria-label={listening?'Stop listening':'Dictate locally (English)'}><Icon name="mic"/>{listening?'Stop listening':'Dictate'}</button>
+    {!siteReview&&<button className="primary" type="submit" disabled={busy||!command.trim()}>Run task <Icon name="arrow"/></button>}
+    <button className="secondary mic" type="button" disabled={pending||running||guiding||preparing||research.busy||application.busy||!!application.review} onClick={()=>void dictate()} title={listening?'Stop listening':'Dictate locally (English)'} aria-label={listening?'Stop listening':'Dictate locally (English)'}><Icon name="mic"/>{listening?'Stop listening':'Dictate'}</button>
    </div>
    {draftNotice&&<p className="muted helper">{draftNotice}</p>}
   </form>
 
-  {cloudReview&&<section className="card review" aria-label="Cloud sharing review">
-   <div className="section-label"><Icon name="shield"/> Cloud sharing review</div>
-   <h2>Use the cloud planner?</h2>
-   <p>Chrome AI isn’t ready. For this task, your command and limited visible excerpts from <strong>{new URL(cloudReview.url).origin}</strong> will go to <strong>{PLANNER_ORIGIN}</strong> and its model provider.</p>
-   <p className="muted">Use public pages and non-confidential commands only. Form field labels and values are not sent; redaction of visible text is not guaranteed.</p>
-   <button className="primary full" type="button" disabled={busy} onClick={()=>void run()}>Approve and continue <Icon name="arrow"/></button>
-   <button className="quiet full" type="button" onClick={()=>setCloudReview(null)}>Cancel sharing</button>
+  {siteReview&&<section className="card review" aria-label="Website access review">
+   <h2>Open this site in a new tab?</h2><p className="target">{siteReview.url}</p>
+   <p className="muted">Chrome may ask for access to this site only. You can revoke it in the extension’s settings.</p>
+   <button className="primary full" type="button" disabled={busy} onClick={()=>void run(true)}>Open and continue <Icon name="arrow"/></button>
+   <button className="quiet full" type="button" onClick={()=>setSiteReview(null)}>Cancel</button>
   </section>}
-
   <section className="card result" aria-labelledby="result-title">
    <div className="result-head"><h2 id="result-title">Task result</h2>
+    <button className="quiet speech-toggle" type="button" aria-label="Speak results" aria-pressed={speakingEnabled} onClick={toggleSpeech}>Speak results: {speakingEnabled?'On':'Off'}</button>
     {(running||guiding)&&<button className="quiet stop" type="button" onClick={stop}><Icon name="stop"/>Stop task</button>}
    </div>
-   <div className="result-status" role="status"><span className="phase" data-phase={phase}>{phase}</span><p>{result}</p></div>
+   <div className="result-status" role="status"><span className="phase" data-phase={phase}>{phase}</span><p className="result-message" key={phase}>{result}</p></div>
    {error&&<p className="error" role="alert">{error}</p>}
+   {speechNotice&&<p className="muted helper" role="status">{speechNotice}</p>}
+   {speakingEnabled&&answer&&speechNotice.startsWith('Playback needs')&&<button className="secondary" type="button" onClick={()=>playResult(answer)}>Play result</button>}
   </section>
+  <ResearchCards research={research}/>
+  <ApplicationCards flow={application}/>
 
   {session?.phase==='waiting-confirmation'&&session.videoApproval&&<section className="card review" aria-label="YouTube choices">
    <h2>Choose a YouTube result</h2>
    <ul className="choice-list">{session.videoApproval.choices.map(choice=><li key={choice.id}><button className="secondary full" type="button" disabled={pending} onClick={()=>void send('PLAY_VIDEO',{sessionId:session.id,videoId:choice.id})}>{choice.title}</button></li>)}</ul>
   </section>}
   {session?.draft&&<section className="card review" aria-label="Form draft">
-   <h2>Review form draft</h2>
-   <dl>{session.draft.map((field,i)=><React.Fragment key={i}><dt>{field.label}</dt><dd>{field.value}</dd></React.Fragment>)}</dl>
+   <h2>Review form draft</h2>{session.guided&&<p className="target">{new URL(session.guided.url).origin}</p>}
+   <div className="draft-fields">{session.draft.map((field,i)=><div className="draft-row" key={i}><label>{field.label}
+    <input disabled={draftSkipped.includes(i)} type="text" value={draftValues[i]??field.value} maxLength={160} onChange={e=>{const value=e.currentTarget.value;setDraftValues(values=>values.map((v,j)=>j===i?value:v))}}/>
+   </label>
+   <label className="skip-field"><input type="checkbox" checked={draftSkipped.includes(i)} onChange={()=>setDraftSkipped(prev=>prev.includes(i)?prev.filter(j=>j!==i):[...prev,i])}/> Skip {field.label}</label>
+   </div>)}</div>
    <p className="muted">The site can react to entered text immediately. Review every value. Upload files and submit on the website yourself.</p>
-   <button className="primary full" type="button" disabled={pending||guiding} onClick={()=>void send('APPROVE_GUIDED',{sessionId:session.id})}>Fill these fields</button>
+   <button className="primary full" type="button" disabled={pending||guiding||draftValues.length!==session.draft.length||draftSkipped.length===session.draft.length||draftValues.some((x,i)=>!draftSkipped.includes(i)&&!x.trim())} onClick={()=>void send('APPROVE_GUIDED',{sessionId:session.id,values:draftValues.map((x,i)=>draftSkipped.includes(i)?null:x)})}>Fill these fields</button>
+  </section>}
+  {session?.review?.type==='expand'&&<section className="card review" aria-label="Disclosure review">
+   <h2>Expand this section?</h2><p>{session.review.target.label}</p>
+   <button className="primary full" type="button" disabled={pending} onClick={()=>void send('APPROVE_GUIDED',{sessionId:session.id})}>Expand and continue</button>
   </section>}
   {session?.review?.type==='link'&&<section className="card review" aria-label="Link review">
    <h2>Review link</h2><p>{session.review.target.label}</p><p className="target">{session.review.target.url}</p>
-   <button className="primary full" type="button" disabled={pending||guiding} onClick={()=>void send('APPROVE_GUIDED',{sessionId:session.id})}>Open this link <Icon name="arrow"/></button>
+   <button className="primary full" type="button" disabled={pending} onClick={()=>void send('APPROVE_GUIDED',{sessionId:session.id})}>Open this link <Icon name="arrow"/></button>
   </section>}
 
+  <SavedDetails disabled={busy} onFill={()=>{application.clear();research.clear();void send('DRAFT_PROFILE')}}/>
   <details className="card settings">
    <summary><Icon name="brand"/><span>More tools</span></summary>
    <div className="settings-body tool-stack">
     <button className="secondary" type="button" disabled={pending} onClick={()=>void send('SHOW_OVERLAY')}>Show assistant on page</button>
-    <button className="secondary" type="button" disabled={busy||!command.trim()} onClick={()=>void prepare()}>{preparing?'Preparing…':'Suggest supported command on device'}</button>
+    <button className="secondary" type="button" disabled={busy||!command.trim()} onClick={()=>void prepare()}>{preparing?'Preparing…':'Suggest a supported command'}</button>
    </div>
   </details>
-  <footer><Icon name="shield"/><span>Local-first. You approve any cloud sharing and reviewed actions.</span></footer>
+  <footer><Icon name="shield"/><span>You review links and form changes before they happen.</span></footer>
  </main>;
 }
 createRoot(document.getElementById('root')!).render(<App/>);

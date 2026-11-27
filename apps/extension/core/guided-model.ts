@@ -24,7 +24,9 @@ export async function createGuidedModel(signal:AbortSignal){
   '{"type":"ask","question":"What information is missing?"} if you need clarification or the request is unsupported.',
   '{"type":"draft","entries":[{"field":0,"value":"a value explicitly given by the user"}]} for a preview. Field is the index in the most recent fields array. Never invent personal details.',
   '{"type":"open_link","link":0} to propose opening a listed link with review. Link is the index in the latest links array.',
-  'The user must review a link or draft before any action. Do not request other clicks, uploads or submit actions. Do not infer missing private information.',
+  '{"type":"expand","disclosure":0} to propose opening a listed native disclosure after review.',
+  'After an approved link or disclosure, continue from the new evidence. Do not reuse a previous index.',
+  'The user must review a link, disclosure or draft before any action. Do not request other clicks, uploads or submit actions. Do not infer missing private information.',
  ].join('\n')}]});
  if(signal.aborted){instance.destroy();signal.throwIfAborted()}
  return {

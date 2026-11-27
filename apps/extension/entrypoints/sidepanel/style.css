@@ -27,10 +27,7 @@ button:disabled { cursor:not-allowed; opacity:.52; }
 .eyebrow { color:#c9d6ff; }
 h1,h2,p { margin:0; }
 .hero h1 { font-size:1.5rem; line-height:1.2; letter-spacing:-.04em; margin-top:11px; }
-.hero > p:not(.model-pill) { margin-top:4px; color:#d7e1ff; font-size:.88rem; }
-.model-pill { max-width:100%; margin-top:12px; width:max-content; display:flex; align-items:center; gap:7px; border-radius:100px; padding:3px 9px; color:#dfe7ff; background:#ffffff1b; font-size:.74rem; }
-.model-pill > span { width:6px; height:6px; flex:none; border-radius:50%; background:#f1ba73; }
-.model-pill[data-ready="true"] > span { background:#90f0c6; }
+.hero > p { margin-top:4px; color:#d7e1ff; font-size:.88rem; }
 .card { min-width:0; padding:14px; background:var(--card); border:1px solid var(--line); border-radius:15px; box-shadow:var(--shadow); }
 label,h2 { font-size:.96rem; font-weight:740; }
 .composer,.settings-body,.review { display:grid; gap:9px; }
@@ -87,3 +84,53 @@ footer > svg { flex:none; }
  .hero,.card { padding:10px; }
  .settings .badge { display:none; }
 }
+
+.privacy-note { display:grid; grid-template-columns:auto minmax(0, 1fr) auto; align-items:start; gap:8px; color:var(--muted); font-size:.78rem; }
+.privacy-note p { margin:0; line-height:1.5; }
+.privacy-note button { align-self:start; padding:0 3px; }
+
+@media (prefers-reduced-motion:no-preference) {
+ :root { --motion-fast:140ms; --motion-panel:210ms; --motion-ease:cubic-bezier(.2,.75,.25,1); }
+ button,.phase,.composer textarea {
+  transition:background-color var(--motion-fast) ease-out,border-color var(--motion-fast) ease-out,
+   color var(--motion-fast) ease-out,opacity var(--motion-fast) ease-out,transform var(--motion-fast) var(--motion-ease);
+ }
+ button:active:enabled { transform:translateY(1px); }
+ .review,.result-message,.error { animation:assistant-appear var(--motion-panel) var(--motion-ease) both; }
+ .privacy-note { transition:opacity var(--motion-panel) var(--motion-ease), display var(--motion-panel) allow-discrete; }
+ .privacy-note[hidden] { display:none; opacity:0; }
+ @starting-style { .privacy-note:not([hidden]) { opacity:0; } }
+ .settings > summary::after { transition:transform var(--motion-panel) var(--motion-ease); }
+ @supports (interpolate-size:allow-keywords) {
+  .settings::details-content {
+   interpolate-size:allow-keywords;
+   block-size:0; overflow:clip; opacity:0;
+   transition:block-size var(--motion-panel) var(--motion-ease),opacity var(--motion-panel) var(--motion-ease),
+    content-visibility var(--motion-panel) allow-discrete;
+  }
+  .settings[open]::details-content { block-size:auto; opacity:1; }
+ }
+}
+@keyframes assistant-appear {
+ from { opacity:0; transform:translateY(4px); }
+ to { opacity:1; transform:translateY(0); }
+}
+.privacy-note[hidden] { display:none; }
+
+.speech-toggle { margin-left:auto; font-size:.76rem; min-height:29px; }
+.speech-toggle[aria-pressed="true"] { color:var(--good); background:var(--good-bg); }
+.research-choice { display:flex; gap:8px; align-items:flex-start; cursor:pointer; font-size:.85rem; }
+.research-choice input { margin-top:4px; flex:none; }
+.research-choice span,.research-links { overflow-wrap:anywhere; }
+.research-choice small,.research-links small { display:block; font-size:.75rem; color:var(--muted); font-weight:400; }
+.research-answer { white-space:pre-wrap; }
+.research-links { padding-left:22px; margin:0; display:grid; gap:5px; }
+.research-links a { color:var(--accent); }
+.draft-fields { display:grid; gap:8px; }
+.draft-fields label { display:grid; gap:3px; }
+.draft-fields input { width:100%; min-width:0; border:1px solid var(--line); border-radius:8px; padding:6px 8px; background:var(--faint); color:var(--ink); }
+
+.application-destination { display:grid; justify-items:start; text-align:left; overflow-wrap:anywhere; }
+.application-destination small { color:var(--muted); font-weight:400; }
+.draft-row .skip-field { display:flex; align-items:center; gap:6px; font-size:.75rem; color:var(--muted); font-weight:500; }
+.draft-row .skip-field input { width:auto; }

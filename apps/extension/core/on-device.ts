@@ -27,7 +27,7 @@ export async function suggestOnDevice(command:string,signal:AbortSignal){
  const model=platform.LanguageModel;
  if(!model||await model.availability()!=='available')throw new Error('Chrome’s on-device model is not installed or available. Use one of the listed commands.');
  signal.throwIfAborted();
- const instance=await model.create({initialPrompts:[{role:'system',content:'Translate the request to exactly one supported command or return UNSUPPORTED. Supported commands: Open YouTube; Play SONG on YouTube; Search Google for QUERY; Inspect page; Scroll up; Scroll down; Page up; Page down; Go back; Next tab; Previous tab. Do not expand the scope or add actions. Output just the command, no prose.'}]});
+ const instance=await model.create({initialPrompts:[{role:'system',content:'Translate the request to exactly one supported command or return UNSUPPORTED. Supported commands: Open YouTube; Open YouTube in a new tab; Play SONG on YouTube; Search Google for QUERY; Inspect page; Scroll up; Scroll down; Page up; Page down; Go back; Next tab; Previous tab. Do not expand the scope or add actions. Output just the command, no prose.'}]});
  try{
   const result=validateSuggestion(await instance.prompt(command,{signal}));
   if(!result)throw new Error('No supported command was suggested.');

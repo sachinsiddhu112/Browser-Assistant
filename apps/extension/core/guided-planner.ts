@@ -21,8 +21,8 @@ export async function runGuided(
    const decision=parseGuidedDecision(await propose({snapshot,previous:previous.slice(),signal}));
    signal.throwIfAborted();
    const next=await transport.step(started.sessionId,decision);
-   if(decision.type!=='scroll')return;
-   if(!next)throw new Error('The extension could not verify a fresh view after scrolling.');
+   if(decision.type!=='scroll'&&decision.type!=='open_link'&&decision.type!=='expand')return;
+   if(!next)throw new Error('The extension could not verify a fresh view after the browser action.');
    snapshot=next;
    previous.push(decision);
   }

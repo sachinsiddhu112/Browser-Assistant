@@ -1,8 +1,8 @@
 # No-token cloud pilot
 
 The extension has a fixed public HTTPS planner origin and sends no
-Authorization header or cookies. Chrome's narrow host permission and
-per-task sharing approval still apply. Local commands do not need an account
+Authorization header or cookies. Chrome declares the exact planner host, and
+the panel displays a dismissible privacy note whenever it opens. Local commands do not need an account
 or the cloud. The public endpoint is not extension-authenticated: anyone
 who can reach it can make requests. CORS is not an anti-abuse control.
 

@@ -1,7 +1,8 @@
 // Functions passed to the MV3 scripting API must not close over module state.
 export function readGuidedViewport(action?:
  {type:'fill';items:{id:string;label:string;value:string}[]}|
- {type:'link';id:string;label:string;url:string}
+ {type:'link';id:string;label:string;url:string}|
+ {type:'expand';id:string;label:string}
 ){
  const visible=(el:Element)=>{
   const r=el.getBoundingClientRect(), style=getComputedStyle(el);
@@ -27,6 +28,7 @@ export function readGuidedViewport(action?:
   const markers=[label,el.name,el.autocomplete].join(' ');
   if(!label||/(pass(word|code)|\bpin\b|one.time|\botp\b|secret|token|ssn|social.security|\bcc-|credit.card|bank.account|routing.number|api.key)/i.test(markers))return null;
   if(el.form){
+   if(el.form.querySelector('input[type="password"],input[autocomplete="one-time-code"],input[autocomplete^="cc-"]'))return null;
    const action=el.form.getAttribute('action');
    const target=new URL(action||location.href,document.baseURI);
    if(target.origin!==location.origin)return null;
@@ -74,14 +76,16 @@ export function readGuidedViewport(action?:
   }
   return {kind:'filled' as const,count};
  }
+ // Only native HTML disclosures, not site-provided button handlers or form submits.
+ const disclosures=Array.from(document.querySelectorAll('details:not([open]) > summary:first-of-type'))
+  .filter(el=>visible(el)&&!el.closest('form,[contenteditable],dialog,[role="dialog"]'))
+  .map(el=>({el,id:id(el),label:clean((el as HTMLElement).innerText??'')})).filter(x=>!!x.label).slice(0,8);
+ if(action?.type==='expand'){
+  const found=disclosures.find(x=>x.id===action.id&&x.label===action.label)?.el.parentElement;
+  if(!(found instanceof HTMLDetailsElement)||!found.isConnected||found.open)throw new Error('The disclosure is no longer available');
+  found.open=true;
+  return {kind:'expanded' as const,opened:found.isConnected&&found.open};
+ }
  const root=document.scrollingElement;
- return {kind:'snapshot' as const,text,fields:fields.map(({id,label})=>({id,label})),links,canScrollUp:(root?.scrollTop??0)>1,canScrollDown:!!root&&root.scrollTop+root.clientHeight<root.scrollHeight-1};
-}
-
-export function scrollGuidedViewport(direction:'up'|'down'){
- const root=document.scrollingElement;
- if(!root)return false;
- const before=root.scrollTop;
- root.scrollTo({top:before+(direction==='down'?1:-1)*Math.max(100,Math.round(innerHeight*.75)),behavior:'instant'});
- return Math.abs(root.scrollTop-before)>1;
+ return {kind:'snapshot' as const,text,disclosures:disclosures.map(({id,label})=>({id,label})),fields:fields.map(({id,label})=>({id,label})),links,canScrollUp:(root?.scrollTop??0)>1,canScrollDown:!!root&&root.scrollTop+root.clientHeight<root.scrollHeight-1};
 }
