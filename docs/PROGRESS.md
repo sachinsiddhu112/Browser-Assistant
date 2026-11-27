@@ -110,3 +110,9 @@ scrolling to instant and remove nonessential side-panel and overlay motion.
   filling. Unsupported fields, uploads and final submission stay manual.
 - Use **Fill from my profile** on an application form already open. Saving or
   deleting a profile does not fill any site.
+
+### v0.7.1: understand browser commands before reading the page
+
+Fast-path supported commands stay local. For unfamiliar wording, the model first classifies the command without page content (Chrome when available, otherwise the private backend's existing public request budget). The classifier can select a predefined browser skill (including scrolling, history, tabs, search and playback), research/compare, or reviewed profile/application workflow, or point to an HTTPS destination the user supplied. Destinations outside the fixed built-ins still require website review. Page answers and clarification are now distinct from completed actions. No runtime permissions or provider credentials were added.
+
+Deploy the backward-compatible planner update before relying on cloud intent routing. Older backends still support page answers; the explicit YouTube URL repair and on-device intent routing do not require a backend update.

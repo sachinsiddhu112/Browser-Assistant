@@ -15,6 +15,8 @@ export function routeIntent(command:string):Action|null{
  if(song)return {type:'navigate',url:'https://www.youtube.com/results?search_query='+encodeURIComponent(song[1])};
  // Match only a complete, explicit command for the fixed YouTube destination.
  const tabCommand=c.replace(/[ \t]+/g,' ');
+ if(/^(?:please )?open youtube? in (?:(?:a|another) )?new tab using (?:https:\/\/)?(?:www\.)?youtube\.com\/?[.!?]?$/i.test(tabCommand))
+  return {type:'open_youtube_tab'};
  if(/^(?:please )?open (?:(?:a )?new tab (?:for|to|with) youtube(?:\.com)?|youtube(?:\.com)? in (?:(?:a|another) )?new tab)[.!?]?$/i.test(tabCommand))
   return {type:'open_youtube_tab'};
  if(/^open youtube$/i.test(c))return {type:'navigate',url:YOUTUBE_HOME};

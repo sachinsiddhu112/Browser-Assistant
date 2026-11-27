@@ -90,13 +90,45 @@ test('extension local navigation and scrolling',async()=>{
   await panel.reload();
   await expect(panel.getByRole('status')).toContainText('cancelled');
   await panel.evaluate(()=>{globalThis.fetch=async()=>{throw new Error('The local command must not call a planner')}});
-  await panel.getByRole('textbox',{name:'Command'}).fill('Open a new tab for YouTube');
+  await panel.getByRole('textbox',{name:'Command'}).fill('open youtub in new tab using youtube.com');
   await site.bringToFront();
   const newTab=context.waitForEvent('page');
   await panel.evaluate(()=>document.querySelector('form')?.requestSubmit());
   const opened=await newTab;
   await expect(opened).toHaveURL('https://www.youtube.com/');
   await expect(site).toHaveURL('https://www.youtube.com/results?search_query=Example');
+  await expect(panel.getByRole('status')).toContainText('Opened YouTube in a new tab');
+  await opened.close();
+  await panel.evaluate(()=>{
+   Object.defineProperty(globalThis,'LanguageModel',{configurable:true,value:{
+    availability:async()=> 'available',
+    create:async()=>({destroy:()=>{},prompt:async(input:string)=>{
+     const body=JSON.parse(input);
+     if(body.goal.startsWith('Move me farther down')&&!body.view)return '{"intent":"scroll_down"}';
+     if(body.goal.startsWith('Could you pop')&&!body.view)return '{"intent":"youtube_tab"}';
+     if(body.goal.startsWith('Does this page')&&!body.view)return '{"intent":"guided"}';
+     if(body.goal.startsWith('Does this page')&&body.view)return '{"type":"ask","question":"No matching link in the viewed page."}';
+     throw new Error('Unexpected planner input');
+    }}),
+   }});
+  });
+  const run=async(command:string)=>{
+   await panel.getByRole('textbox',{name:'Command'}).fill(command);
+   await site.bringToFront();
+   await panel.evaluate(()=>document.querySelector('form')?.requestSubmit());
+  };
+  await site.goto('https://example.com/');
+  await run('Move me farther down this page');
+  await expect(panel.getByRole('status')).toContainText('Page scrolled');
+  expect(await site.evaluate(()=>scrollY)).toBeGreaterThan(0);
+  const originalTabCount=context.pages().length;
+  await run('Does this page contain a link to YouTube?');
+  await expect(panel.getByRole('status')).toContainText('needs-input');
+  expect(context.pages()).toHaveLength(originalTabCount);
+  const semantic=context.waitForEvent('page');
+  await run('Could you pop YouTube into its own tab?');
+  await expect(await semantic).toHaveURL('https://www.youtube.com/');
+  await expect(site).toHaveURL('https://example.com/');
   await expect(panel.getByRole('status')).toContainText('Opened YouTube in a new tab');
  }finally{await context.close();await rm(dir,{recursive:true,force:true})}
 });
@@ -128,6 +160,7 @@ test('free-form goal chooses next steps from the real browser, and drafts withou
     create:async()=>({
      prompt:async (input:string)=>{
       const {goal,view,previousSteps}=JSON.parse(input);
+      if(!view)return JSON.stringify({intent:'guided'});
       if(input.includes('fixture-only-never-read')||view.fields.includes('Password'))throw new Error('Sensitive field leaked');
       if(goal.includes('details')){
        if(view.links.includes('Off-site details'))throw new Error('Unexpected off-site link');
@@ -222,6 +255,10 @@ test('one Run task click uses automatic fallback and retains link review',async(
    globalThis.fetch=async (input,init)=>{
     const body=JSON.parse(String(init?.body));
     globals.fixtureCalls.push({url:String(input),body,authorization:new Headers(init?.headers).get('Authorization')});
+    if(body.mode==='intent'){
+     if(body.text||body.links)throw new Error('Intent routing must not read the page');
+     return new Response(JSON.stringify({decision:{intent:body.goal.includes('pop YouTube')?'youtube_tab':'guided'}}));
+    }
     const decision=body.goal.includes('guide')&&!body.text.includes('Public guide fixture')?
      {type:'open_link',link:body.links.indexOf('Guide')}:{type:'finish',answer:body.goal.includes('guide')?'Read the public guide.':'Cloud fixture answer'};
     return new Response(JSON.stringify({decision}),{headers:{'Content-Type':'application/json'}});
@@ -252,9 +289,11 @@ test('one Run task click uses automatic fallback and retains link review',async(
   expect(await calls()).toEqual([]);
   await submit();
   await expect(panel.getByRole('status')).toContainText('Cloud fixture answer');
+  await expect(panel.getByRole('status')).toContainText('answered');
   await expect(panel.getByRole('button',{name:'Approve and continue'})).toHaveCount(0);
   const requests=await calls();
-  expect(requests).toHaveLength(1);
+  expect(requests).toHaveLength(2);
+  expect(requests[0].body).toEqual({mode:'intent',goal:'Tell me about the visible fixture.',sites:[]});
   expect(requests[0].url).toBe('https://browser-assistant-api-production.up.railway.app/planner/next');
   expect(requests[0].authorization).toBeNull();
   expect(requests[0].body.goal).toBe('Tell me about the visible fixture.');
@@ -264,15 +303,33 @@ test('one Run task click uses automatic fallback and retains link review',async(
   await command.fill('Find the guide and read it.');
   await submit();
   await expect(panel.getByRole('region',{name:'Link review'})).toContainText('https://example.com/guide');
-  expect(await calls()).toHaveLength(2);
+  expect(await calls()).toHaveLength(4);
   await expect(site).toHaveURL('https://example.com/');
   await panel.getByRole('button',{name:'Open this link'}).evaluate((button:HTMLButtonElement)=>button.click());
   await expect(site).toHaveURL('https://example.com/guide');
   await expect(panel.getByRole('status')).toContainText('Read the public guide.');
-  expect(await calls()).toHaveLength(3);
+  expect(await calls()).toHaveLength(5);
   await panel.reload();
   await expect(panel.getByRole('status')).toContainText('Read the public guide.');
   await expect(panel.getByRole('complementary',{name:'Privacy note'})).toBeVisible();
+  await context.route('https://www.youtube.com/**',route=>route.fulfill({contentType:'text/html',body:'<h1>YouTube fixture</h1>'}));
+  // Reload removed the mocked provider; use a fresh stub for command-only routing.
+  await panel.evaluate(()=>{
+   Object.defineProperty(globalThis,'LanguageModel',{configurable:true,value:{availability:async()=> 'unavailable'}});
+   globalThis.fetch=async(_input,init)=>{
+    const body=JSON.parse(String(init?.body));
+    if(body.mode!=='intent'||Object.keys(body).length!==3||body.goal!=='Please pop YouTube into its own tab')throw new Error('Expected minimized command-only request');
+    return new Response('{"decision":{"intent":"youtube_tab"}}');
+   };
+  });
+  await command.fill('Please pop YouTube into its own tab');
+  await site.bringToFront();
+  const newTab=context.waitForEvent('page');
+  await submit();
+  await expect(await newTab).toHaveURL('https://www.youtube.com/');
+  await expect(site).toHaveURL('https://example.com/guide');
+  await expect(panel.getByRole('status')).toContainText('Opened YouTube in a new tab');
+
  }finally{await context.close();await rm(dir,{recursive:true,force:true})}
 });
 
@@ -350,6 +407,10 @@ test('research selects two sites, compares verified evidence and speaks the resu
    }});
    globalThis.fetch=async (_input,init)=>{
     const body=JSON.parse(String(init?.body));globals.fixture.requests.push(body);
+    if(body.mode==='intent'){
+     if(body.goal!=='Could you look up the differences in request validation in two frameworks?'||body.text)throw new Error('Expected command-only intent');
+     return new Response('{"decision":{"intent":"compare","args":["request validation in two frameworks"]}}');
+    }
     if(!body.text.includes('Source 1: Defaults | Schema A')||!body.text.includes('Source 2: Defaults | Schema B'))throw new Error('Missing evidence from both sites');
     return new Response(JSON.stringify({decision:{type:'finish',answer:'Source 1 uses Schema A. Source 2 uses Schema B.'}}));
    };
@@ -358,12 +419,12 @@ test('research selects two sites, compares verified evidence and speaks the resu
   await expect(panel.getByRole('button',{name:'Speak results'})).toHaveAttribute('aria-pressed','false');
   await panel.getByRole('button',{name:'Speak results'}).evaluate((button:HTMLButtonElement)=>button.click());
   await expect(panel.getByRole('button',{name:'Speak results'})).toHaveAttribute('aria-pressed','true');
-  await panel.getByRole('textbox',{name:'Command'}).fill('Compare request validation in two frameworks');
+  await panel.getByRole('textbox',{name:'Command'}).fill('Could you look up the differences in request validation in two frameworks?');
   await source.bringToFront();
   await panel.evaluate(()=>document.querySelector('form')?.requestSubmit());
   const review=panel.getByRole('region',{name:'Research sources'});
   await expect(review).toContainText('Framework one');
-  expect((await get()).requests).toHaveLength(0);
+  expect((await get()).requests).toHaveLength(1);
   await review.getByRole('checkbox').nth(0).check();
   await review.getByRole('checkbox').nth(1).check();
   await review.getByRole('button',{name:'Open and read selected sources'}).click();
