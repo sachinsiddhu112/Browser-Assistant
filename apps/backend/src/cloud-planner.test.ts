@@ -174,3 +174,15 @@ test('intent mode excludes page data and validates indexed destinations and skil
  };
  assert.deepEqual(await requestCloudStep(parseIntentInput(intent),{apiKey:'fake',model:'fake'},send),{intent:'open_site',target:0});
 });
+
+test('accepts bounded working context without changing legacy callers',()=>{
+ const workingChat=JSON.stringify({recent:[{request:'Find the date',kind:'question',output:'Which date?'}],pending:{request:'Find the date',question:'Which date?'}});
+ const data={mode:'intent',goal:'The registration deadline',sites:[],workingChat};
+ assert.deepEqual(parseIntentInput(data),data);
+ assert.equal(parsePlanInput({...input,workingChat}).workingChat,workingChat);
+ assert.throws(()=>parseIntentInput({...data,workingChat:'x'.repeat(2401)}));
+ assert.throws(()=>parsePlanInput({...input,workingChat:'[]'}));
+ assert.throws(()=>parseCloudIntent({intent:'guided',resume:true},0));
+ assert.deepEqual(parseCloudIntent({intent:'guided',resume:true},0,workingChat),{intent:'guided',resume:true});
+ assert.throws(()=>parseCloudIntent({intent:'context_source',target:3},0,workingChat));
+});

@@ -120,3 +120,11 @@ Deploy the backward-compatible planner update before relying on cloud intent rou
 ### v0.7.2: YouTube search-to-play handoff
 
 Recognize the same visible search query despite equivalent URL encoding or extra presentation parameters. Read verified, visible video titles from multiple result layouts and keep the user's choice step. If there is no supported match, leave the search open and report that nothing played. After selection, make at most one standard player play request and verify that the selected non-ad video advances. If playback is blocked, unverified or muted, explain the manual step. This is an extension-only update.
+
+### v0.7.3: tolerate a typo in an explicit media command
+
+An explicit Play request retains the song text and treats a single spelling edit in the named YouTube platform as the same service. The fast path routes playback without asking the model to guess, while other phrasing still has semantic routing. Literal URLs are never fuzzily rewritten. Extension-only.
+
+### v0.8.0: one temporary working chat per Chrome window
+
+Keep recent commands, outcomes, one pending clarification, and verified comparison sources in restricted extension session storage. Restore context when the panel is reopened, treat unrelated inputs as separate tasks, and explicitly resolve continuation or a saved source before acting. Recheck the original document for page clarifications and retain the existing review before opening any saved source. New chat and closing the window discard the context; no database, sync, or history archive. Send only a bounded redacted projection, with no saved contact details or source addresses. Deploy the optional-context cloud planner update to enable cloud continuation; the local Chrome model can use the context without deployment.
