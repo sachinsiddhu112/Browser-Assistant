@@ -127,7 +127,7 @@ function App(){
    const ready=model;
    await runGuided({
     begin:async()=>{
-     const r=await (approved?message('START_CLOUD',{mode:'cloud',expectedTab:approved}):message('START_GUIDED',expectedSiteTab===undefined?{}:{expectedTab:{id:expectedSiteTab,url:site!.url}}));
+     const r=await (approved?message('START_CLOUD',{mode:'cloud',expectedTab:{id:approved.id,url:approved.url}}):message('START_GUIDED',expectedSiteTab===undefined?{}:{expectedTab:{id:expectedSiteTab,url:site!.url}}));
      return {sessionId:Session.parse(r.session).id,snapshot:GuidedSnapshot.parse(r.snapshot)};
     },
     step:async(sessionId,decision)=>{

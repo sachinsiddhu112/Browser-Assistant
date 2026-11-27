@@ -272,9 +272,11 @@ test('compound site command opens a separate tab, then reads the verified destin
   const source=await context.newPage();await source.goto('https://example.com/source');
   const panel=await context.newPage();await panel.goto('chrome-extension://'+new URL(worker.url()).host+'/sidepanel.html');
   await panel.evaluate(()=>{
-   (globalThis as any).chrome.permissions.request=async({origins}:{origins:string[]})=>origins.length===1&&origins[0]==='https://example.com/*';
+   const globals=globalThis as any;
+   const fixtureReady=new Promise<void>(resolve=>{globals.releaseFixture=resolve});
+   globals.chrome.permissions.request=async({origins}:{origins:string[]})=>origins.length===1&&origins[0]==='https://example.com/*';
    Object.defineProperty(globalThis,'LanguageModel',{configurable:true,value:{
-    availability:async()=> 'available',
+    availability:async()=>{await fixtureReady;return 'available'},
     create:async()=>({destroy:()=>{},prompt:async(raw:string)=>{
      const {goal,view}=JSON.parse(raw);
      if(goal!=='describe the page'||!view.text.includes('Documentation fixture'))throw new Error('Wrong goal or evidence');
@@ -288,7 +290,14 @@ test('compound site command opens a separate tab, then reads the verified destin
   await expect(panel.getByRole('region',{name:'Website access review'})).toContainText('https://example.com/docs');
   const opened=context.waitForEvent('page');
   await panel.getByRole('button',{name:'Open and continue'}).evaluate((button:HTMLButtonElement)=>button.click());
-  await expect(await opened).toHaveURL('https://example.com/docs');
+  const destination=await opened;
+  await expect(destination).toHaveURL('https://example.com/docs');
+  // Chrome API-created tabs can start the initial request before Playwright
+  // attaches its route. Load the controlled fixture before releasing inference.
+  await destination.route('https://example.com/docs',r=>r.fulfill({contentType:'text/html',body:'<main><h1>Documentation fixture</h1></main>'}));
+  await destination.reload();
+  await expect(destination.getByRole('heading',{name:'Documentation fixture'})).toBeVisible();
+  await panel.evaluate(()=>(globalThis as any).releaseFixture());
   await expect(source).toHaveURL('https://example.com/source');
   await expect(panel.getByRole('status')).toContainText('Verified the opened documentation page.');
  }finally{await context.close();await rm(dir,{recursive:true,force:true})}
