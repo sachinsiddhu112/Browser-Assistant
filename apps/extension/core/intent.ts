@@ -1,4 +1,5 @@
 import {Action} from '@browser-assistant/shared';
+export const YOUTUBE_HOME='https://www.youtube.com/';
 export function routeIntent(command:string):Action|null{
  const c=command.trim();
  const type=/^type (.+) into search$/i.exec(c);
@@ -12,7 +13,11 @@ export function routeIntent(command:string):Action|null{
  if(/^scroll (up|down)$/i.test(c))return {type:'scroll',direction:c.toLowerCase().endsWith('up')?'up':'down'};
  const song=/^play (.+) on youtube$/i.exec(c);
  if(song)return {type:'navigate',url:'https://www.youtube.com/results?search_query='+encodeURIComponent(song[1])};
- if(/^open youtube$/i.test(c))return {type:'navigate',url:'https://www.youtube.com/'};
+ // Match only a complete, explicit command for the fixed YouTube destination.
+ const tabCommand=c.replace(/[ \t]+/g,' ');
+ if(/^(?:please )?open (?:(?:a )?new tab (?:for|to|with) youtube(?:\.com)?|youtube(?:\.com)? in (?:(?:a|another) )?new tab)[.!?]?$/i.test(tabCommand))
+  return {type:'open_youtube_tab'};
+ if(/^open youtube$/i.test(c))return {type:'navigate',url:YOUTUBE_HOME};
  const google=/^search google for (.+)$/i.exec(c);
  if(google)return {type:'navigate',url:'https://www.google.com/search?q='+encodeURIComponent(google[1])};
  return null;

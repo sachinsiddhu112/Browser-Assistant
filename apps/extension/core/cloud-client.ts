@@ -31,6 +31,6 @@ export async function askCloud(input:ReturnType<typeof cloudPayload>,signal:Abor
  const body=await response.json() as {decision?:unknown};
  const raw=JSON.stringify(body.decision)??'';
  const decision=parseGuidedDecision(raw);
- if(decision.type==='draft')throw new Error('Cloud mode cannot draft or fill form fields.');
+ if(decision.type==='draft'||decision.type==='expand')throw new Error('Cloud mode cannot draft or fill form fields.');
  return raw;
 }

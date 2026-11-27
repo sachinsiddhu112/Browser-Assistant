@@ -2,6 +2,8 @@ import React,{useEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Session,terminal} from '../../core/session';
 import {startLocalDictation,suggestOnDevice} from '../../core/on-device';
+import {parseFormIntent} from '../../core/form-intent';
+import {parseSiteIntent} from '../../core/site-intent';
 import {routeIntent} from '../../core/intent';
 import {GuidedSnapshot} from '../../core/guided-contract';
 import {runGuided} from '../../core/guided-planner';
@@ -9,7 +11,7 @@ import {checkGuidedModel,createGuidedModel,GUIDE_TIMEOUT,type LocalModelAvailabi
 import {askCloud,cloudPayload} from '../../core/cloud-client';
 import './style.css';
 import {PLANNER_HOST,PLANNER_ORIGIN} from '../../core/cloud-config';
-const QUICK_COMMANDS=['Scroll down','Inspect page','Open YouTube'];
+const QUICK_COMMANDS=['Scroll down','Inspect page','YouTube in new tab'];
 function Icon({name}:{name:'brand'|'mic'|'arrow'|'shield'|'settings'|'stop'}){
  const paths={
   brand:<><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18M11 9v11m4-6 2 2-2 2"/></>,
@@ -24,7 +26,8 @@ function Icon({name}:{name:'brand'|'mic'|'arrow'|'shield'|'settings'|'stop'}){
 function App(){
  const [session,setSession]=useState<Session|null>(null),[command,setCommand]=useState(''),[error,setError]=useState(''),[pending,setPending]=useState(false);
  const [preparing,setPreparing]=useState(false),[listening,setListening]=useState(false),[draftNotice,setDraftNotice]=useState('');
- const [cloudReview,setCloudReview]=useState<{id:number;url:string}|null>(null);
+ const [cloudReview,setCloudReview]=useState<{id:number;url:string;goal:string}|null>(null);
+ const [siteReview,setSiteReview]=useState<ReturnType<typeof parseSiteIntent>>(null);
  const [localStatus,setLocalStatus]=useState<LocalModelAvailability|'checking'>('checking');
  const [guiding,setGuiding]=useState(false);
  const guidedAbort=useRef<AbortController|null>(null);
@@ -36,7 +39,7 @@ function App(){
  },[]);
  async function prepare(){
   if(preparing||listening||!command.trim())return;
-  setCloudReview(null);setPreparing(true);setError('');setDraftNotice('');
+  setCloudReview(null);setSiteReview(null);setPreparing(true);setError('');setDraftNotice('');
   const controller=new AbortController();modelAbort.current=controller;
   const timer=setTimeout(()=>controller.abort(),10000);
   try{
@@ -48,7 +51,7 @@ function App(){
  }
  async function dictate(){
   if(listening){stopSpeech.current?.();return}
-  setCloudReview(null);setListening(true);setError('');setDraftNotice('');
+  setCloudReview(null);setSiteReview(null);setListening(true);setError('');setDraftNotice('');
   try{stopSpeech.current=await startLocalDictation(
    text=>{setCommand(text);setDraftNotice('Dictated on this device. Review the draft before running it.')},
    reason=>{stopSpeech.current=null;setListening(false);if(reason)setError(reason)},
@@ -58,11 +61,16 @@ function App(){
   setPending(true);setError('');
   try{const r=await browser.runtime.sendMessage({type,...extra});if(!r?.ok)throw new Error(r?.error??'No response');setSession(r.session??null)}catch(e){setError(e instanceof Error?e.message:'Request failed')}finally{setPending(false)}
  }
- async function run(){
-  const goal=command.trim();
+ async function run(approveSite=false){
+  const goal=cloudReview?.goal??command.trim();
   if(!goal||guidedAbort.current||pending||preparing||listening||session&&!terminal(session))return;
-  if(routeIntent(goal)){setCloudReview(null);await send('START',{command:goal});return}
+  if(!cloudReview&&(routeIntent(goal)||parseFormIntent(goal))){setCloudReview(null);await send('START',{command:goal});return}
   const approved=cloudReview;
+  const site=!approved?parseSiteIntent(goal):null;
+  if(site&&!approveSite){setSiteReview(site);return}
+  setSiteReview(null);
+  let plannerGoal=goal;
+  let expectedSiteTab:number|undefined;
   setCloudReview(null);
   const controller=new AbortController();
   guidedAbort.current=controller;setGuiding(true);setError('');setDraftNotice('');
@@ -73,7 +81,29 @@ function App(){
    if(!r?.ok)throw new Error(r?.error??'Browser task did not respond');
    return r;
   };
+  async function awaitPhase(id:string,expected:'success'|'thinking'){
+   while(true){
+    controller.signal.throwIfAborted();
+    const r=await message('GET_STATE');
+    const s=Session.parse(r.session);
+    if(s.id!==id)throw new Error('The browser task changed');
+    if(s.phase===expected)return s;
+    if(terminal(s))throw new Error(s.message);
+    await new Promise(resolve=>setTimeout(resolve,180));
+   }
+  }
   try{
+   if(site){
+    const origin=site.origin+'/*';
+    if(!await browser.permissions.request({origins:[origin]}))throw new Error('Chrome did not grant access to '+site.origin);
+    controller.signal.throwIfAborted();
+    const opened=Session.parse((await message('START',{command:goal})).session);
+    const destination=await awaitPhase(opened.id,'success');
+    if(!site.goal)return;
+    const tab=await browser.tabs.get(destination.tabId);
+    if(!tab.active||tab.url!==site.url)throw new Error('The requested page changed while opening it');
+    plannerGoal=site.goal;expectedSiteTab=destination.tabId;
+   }
    if(approved){
     if(!await browser.permissions.request({origins:[PLANNER_HOST]}))throw new Error('Chrome did not grant access to the planner host.');
     controller.signal.throwIfAborted();
@@ -89,24 +119,29 @@ function App(){
      const [tab]=await browser.tabs.query({active:true,currentWindow:true});
      controller.signal.throwIfAborted();
      if(tab?.id===undefined||!tab.url?.startsWith('https:'))throw new Error('Select a regular HTTPS page and activate the extension before running a guided task.');
-     setCloudReview({id:tab.id,url:tab.url});
+     if(expectedSiteTab!==undefined&&(tab.id!==expectedSiteTab||tab.url!==site?.url))throw new Error('The opened page changed');
+     setCloudReview({id:tab.id,url:tab.url,goal:plannerGoal});
      return;
     }
    }
    const ready=model;
    await runGuided({
     begin:async()=>{
-     const r=await (approved?message('START_CLOUD',{mode:'cloud',expectedTab:approved}):message('START_GUIDED'));
+     const r=await (approved?message('START_CLOUD',{mode:'cloud',expectedTab:approved}):message('START_GUIDED',expectedSiteTab===undefined?{}:{expectedTab:{id:expectedSiteTab,url:site!.url}}));
      return {sessionId:Session.parse(r.session).id,snapshot:GuidedSnapshot.parse(r.snapshot)};
     },
     step:async(sessionId,decision)=>{
-     const r=await message('STEP_GUIDED',{sessionId,decision});
+     let r=await message('STEP_GUIDED',{sessionId,decision});
+     if(decision.type==='open_link'||decision.type==='expand'){
+      await awaitPhase(sessionId,'thinking');
+      r=await message('RESUME_GUIDED',{sessionId});
+     }
      return r.snapshot===undefined?undefined:GuidedSnapshot.parse(r.snapshot);
     },
     fail:async sessionId=>{await message('FAIL_GUIDED',{sessionId})},
    }, input=>approved
-     ?askCloud(cloudPayload(goal,input.snapshot,input.previous),input.signal)
-     :ready!.propose(goal,input),controller.signal);
+     ?askCloud(cloudPayload(plannerGoal,input.snapshot,input.previous),input.signal)
+     :ready!.propose(plannerGoal,input),controller.signal);
   }catch(e){
    if(controller.signal.reason==='timeout')setError('The guided task timed out. Try a narrower request.');
    else if(!controller.signal.aborted)setError(e instanceof Error?e.message:'The guided task stopped.');
@@ -116,6 +151,7 @@ function App(){
  }
  function stop(){
   if(cloudReview){setCloudReview(null);return}
+  if(siteReview){setSiteReview(null);return}
   guidedAbort.current?.abort('stopped');
   void send('STOP');
  }
@@ -136,30 +172,36 @@ function App(){
  const running=!!session&&!terminal(session);
  const busy=pending||running||guiding||preparing||listening;
  const localLabel=localStatus==='available'?'ready':localStatus==='checking'?'checking…':localStatus==='downloadable'||localStatus==='downloading'?'model not ready yet':'not available';
- const changeCommand=(value:string)=>{setCommand(value);setDraftNotice('');setCloudReview(null);setError('')};
+ const changeCommand=(value:string)=>{setCommand(value);setSiteReview(null);setDraftNotice('');setCloudReview(null);setError('')};
  const phase=guiding&&!running?'thinking':session?.phase??'idle';
  const result=guiding&&!running?'Preparing the task…':session?.message??'Your result will appear here.';
  return <main className="panel">
   <header className="hero">
    <div className="brand-row"><span className="mark"><Icon name="brand"/></span><span className="eyebrow">CHROME EXTENSION</span></div>
    <h1>Browser Assistant</h1>
-   <p>Read and navigate the page you’re on.</p>
+   <p>Read pages and navigate with your approval.</p>
    <p className="model-pill" data-ready={localStatus==='available'} aria-label="Chrome AI availability"><span/>Chrome AI: {localLabel}</p>
   </header>
 
-  <form className="composer card" noValidate onSubmit={e=>{e.preventDefault();if(!cloudReview)void run()}}>
+  <form className="composer card" noValidate onSubmit={e=>{e.preventDefault();if(!cloudReview&&!siteReview)void run()}}>
    <label htmlFor="command">Command</label>
-   <textarea id="command" maxLength={1000} placeholder="What would you like to do on this page?" value={command} disabled={preparing||listening||guiding} onChange={e=>changeCommand(e.target.value)}/>
+   <textarea id="command" maxLength={1000} placeholder="What would you like to do on this page?" value={command} disabled={preparing||listening||guiding||running} onChange={e=>changeCommand(e.target.value)}/>
    <div className="examples" aria-label="Example commands">
-    {QUICK_COMMANDS.map(label=><button className="chip" key={label} type="button" disabled={busy} onClick={()=>changeCommand(label)}>{label}</button>)}
+    {QUICK_COMMANDS.map(label=><button className="chip" key={label} type="button" disabled={busy} onClick={()=>changeCommand(label==='YouTube in new tab'?'Open YouTube in a new tab':label)}>{label}</button>)}
    </div>
    <div className="composer-actions">
-    {!cloudReview&&<button className="primary" type="submit" disabled={busy||!command.trim()}>Run task <Icon name="arrow"/></button>}
+    {!cloudReview&&!siteReview&&<button className="primary" type="submit" disabled={busy||!command.trim()}>Run task <Icon name="arrow"/></button>}
     <button className="secondary mic" type="button" disabled={pending||running||guiding||preparing} onClick={()=>void dictate()} title={listening?'Stop listening':'Dictate locally (English)'} aria-label={listening?'Stop listening':'Dictate locally (English)'}><Icon name="mic"/>{listening?'Stop listening':'Dictate'}</button>
    </div>
    {draftNotice&&<p className="muted helper">{draftNotice}</p>}
   </form>
 
+  {siteReview&&<section className="card review" aria-label="Website access review">
+   <h2>Open this site in a new tab?</h2><p className="target">{siteReview.url}</p>
+   <p className="muted">Chrome will ask for access to this site only. You can revoke it in the extension’s settings. This does not approve cloud sharing.</p>
+   <button className="primary full" type="button" disabled={busy} onClick={()=>void run(true)}>Open and continue <Icon name="arrow"/></button>
+   <button className="quiet full" type="button" onClick={()=>setSiteReview(null)}>Cancel</button>
+  </section>}
   {cloudReview&&<section className="card review" aria-label="Cloud sharing review">
    <div className="section-label"><Icon name="shield"/> Cloud sharing review</div>
    <h2>Use the cloud planner?</h2>
@@ -182,14 +224,18 @@ function App(){
    <ul className="choice-list">{session.videoApproval.choices.map(choice=><li key={choice.id}><button className="secondary full" type="button" disabled={pending} onClick={()=>void send('PLAY_VIDEO',{sessionId:session.id,videoId:choice.id})}>{choice.title}</button></li>)}</ul>
   </section>}
   {session?.draft&&<section className="card review" aria-label="Form draft">
-   <h2>Review form draft</h2>
+   <h2>Review form draft</h2>{session.guided&&<p className="target">{new URL(session.guided.url).origin}</p>}
    <dl>{session.draft.map((field,i)=><React.Fragment key={i}><dt>{field.label}</dt><dd>{field.value}</dd></React.Fragment>)}</dl>
    <p className="muted">The site can react to entered text immediately. Review every value. Upload files and submit on the website yourself.</p>
    <button className="primary full" type="button" disabled={pending||guiding} onClick={()=>void send('APPROVE_GUIDED',{sessionId:session.id})}>Fill these fields</button>
   </section>}
+  {session?.review?.type==='expand'&&<section className="card review" aria-label="Disclosure review">
+   <h2>Expand this section?</h2><p>{session.review.target.label}</p>
+   <button className="primary full" type="button" disabled={pending} onClick={()=>void send('APPROVE_GUIDED',{sessionId:session.id})}>Expand and continue</button>
+  </section>}
   {session?.review?.type==='link'&&<section className="card review" aria-label="Link review">
    <h2>Review link</h2><p>{session.review.target.label}</p><p className="target">{session.review.target.url}</p>
-   <button className="primary full" type="button" disabled={pending||guiding} onClick={()=>void send('APPROVE_GUIDED',{sessionId:session.id})}>Open this link <Icon name="arrow"/></button>
+   <button className="primary full" type="button" disabled={pending} onClick={()=>void send('APPROVE_GUIDED',{sessionId:session.id})}>Open this link <Icon name="arrow"/></button>
   </section>}
 
   <details className="card settings">

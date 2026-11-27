@@ -1,8 +1,8 @@
-# Install the Phase 2 pilot in Chrome
+# Install Browser Assistant in Chrome
 
 The extension is installed in Chrome, not served as a frontend website. Its local
 skills work without a backend. For a private test, use Load unpacked; publishing
-to the Chrome Web Store and hosting the optional health service are separate.
+to the Chrome Web Store and hosting the optional planner service are separate.
 
 ```sh
 corepack enable
@@ -24,14 +24,27 @@ pnpm build
 4. Stop a task while it is waiting for a video choice. Nothing should open.
    Reopen the panel and check that it still shows the cancelled state.
 
+### Guided workflow smoke test
+
+1. Run **Open YouTube in a new tab**. Verify the old tab stays open.
+2. Run **Open docs.nestjs.com in a new tab, then find the Guards guide and summarize it**.
+   Approve only the named site in Chrome. If Chrome AI is not ready, separately
+   review cloud sharing. Review the exact URL before following any proposed link.
+3. On a trusted test form with an empty **Full name** field, run
+   `Fill "Full name" with "Example Name"`. Before approval, the field must stay
+   empty. After approval, it should contain that value without submitting.
+4. Repeat a guided link task and press **Stop task** while the link is waiting for
+   approval. The page must not change.
+
 To make a zip for a private install or future Store submission:
 `pnpm --filter @browser-assistant/extension zip`.
 
 ## Optional NestJS service
 
-The pilot's NestJS service only exposes `GET /health`. It does not receive
-browser data, execute browser actions, or provide cloud planning yet. A
-front-end deployment or API URL is not needed for this Chrome test.
+The NestJS service exposes `GET /health` and the optional cloud planner. The
+planner proposes bounded read/navigation steps; Chrome executes and verifies
+approved actions. The user does not enter a backend URL or token. Cloud use is
+opt-in per task; see [public cloud pilot settings](PUBLIC-CLOUD-PILOT.md).
 
 ```sh
 docker build -t browser-assistant-api .

@@ -50,3 +50,12 @@ tasks. Built-in actions continue to work without a planner.
 The side panel groups the command, approvals, result, and pilot settings. The hosted planner origin is prefilled; a custom host is still available in Advanced connection settings. The pilot token is not persisted.
 
 The no-token public preview is gated on server-side limits and persistent storage. See [PUBLIC-CLOUD-PILOT.md](PUBLIC-CLOUD-PILOT.md).
+
+A built-in skill now handles “Open a new tab for YouTube” and “Open YouTube in a new tab.” It opens only the fixed YouTube home page, keeps the original tab, and does not call a model. Plain “Open YouTube” keeps its current-tab behavior.
+
+## Guided navigation and form review
+
+- “Open docs.nestjs.com in a new tab, then find the Guards guide and explain it” opens the literal HTTPS address, asks for that site's Chrome access, and continues using the same new tab. No model can supply an arbitrary address. The original tab remains open. Cloud sharing is a separate approval and is bound to the selected tab and origin.
+- The model gets a fresh view after each verified scroll or reviewed same-origin link. Local AI can also propose expanding a native disclosure. Link/disclosure actions pause for review; redirects, stale targets, revisited pages, changing tabs, time/step limits and cancellation stop the workflow.
+- “Fill "Full name" with "Sachin"; "Message" with "Hello"” creates a local preview without any AI or network call. Review the origin and each value, then fill eligible empty text controls. Credentials, file uploads, CAPTCHA, arbitrary button clicks and form submission remain manual.
+- Required Chrome permissions and the Railway planner API are unchanged. Exact-site Chrome grants are requested at runtime and are revocable in the extension settings. Do not request broad site access at install time.

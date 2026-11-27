@@ -31,6 +31,18 @@ test('extension local navigation and scrolling',async()=>{
   await expect.poll(async()=> (await send('GET_STATE')).session?.phase).toBe('success');
   await expect(site.getByRole('searchbox')).toHaveValue('NestJS');
   await expect(site.locator('input[type=password]')).toHaveValue('');
+  await context.route('https://www.youtube.com/',route=>route.fulfill({contentType:'text/html',body:'<h1>YouTube new tab fixture</h1>'}));
+  await panel.evaluate(()=>{globalThis.fetch=async()=>{throw new Error('The local command must not call a planner')}});
+  await panel.getByRole('textbox',{name:'Command'}).fill('Open a new tab for YouTube');
+  await site.bringToFront();
+  const newTab=context.waitForEvent('page');
+  await panel.evaluate(()=>document.querySelector('form')?.requestSubmit());
+  const opened=await newTab;
+  await expect(opened).toHaveURL('https://www.youtube.com/');
+  await expect(site).toHaveURL('https://example.com/');
+  await expect(panel.getByRole('status')).toContainText('Opened YouTube in a new tab');
+  await opened.close();
+  await site.bringToFront();
   await site.route('https://www.youtube.com/**',route=>route.fulfill({contentType:'text/html',body:'<html><body><h1>YouTube fixture</h1></body></html>'}));
   expect((await send('START',{command:'Open YouTube'})).ok).toBe(true);
   await expect.poll(async()=> (await send('GET_STATE')).session?.phase).toBe('success');
@@ -77,7 +89,7 @@ test('free-form goal chooses next steps from the real browser, and drafts withou
   const worker=context.serviceWorkers()[0]??await context.waitForEvent('serviceworker');
   const id=new URL(worker.url()).host;
   const site=await context.newPage();
-  await site.route('https://example.com/**',route=>route.fulfill({contentType:'text/html',body:`<!doctype html><main>
+  await site.route('https://example.com/**',route=>route.request().url().endsWith('/details')?route.fulfill({contentType:'text/html',body:'<main><h1>Role details page</h1><details><summary>Benefits</summary><p>Training budget is available.</p></details></main>'}):route.fulfill({contentType:'text/html',body:`<!doctype html><main>
    <h1>Apply to the workspace</h1>
    <p>Scroll down for the application deadline.</p>
    <div style="height:720px"></div>
@@ -98,6 +110,8 @@ test('free-form goal chooses next steps from the real browser, and drafts withou
       if(input.includes('fixture-only-never-read')||view.fields.includes('Password'))throw new Error('Sensitive field leaked');
       if(goal.includes('details')){
        if(view.links.includes('Off-site details'))throw new Error('Unexpected off-site link');
+       if(view.text.includes('Training budget is available.'))return JSON.stringify({type:'finish',answer:'Verified: training budget is available.'});
+       if(view.text.includes('Role details page'))return JSON.stringify({type:'expand',disclosure:view.disclosures.indexOf('Benefits')});
        return JSON.stringify({type:'open_link',link:view.links.indexOf('Role details')});
       }
       if(goal.includes('name'))return JSON.stringify({type:'draft',entries:[{field:view.fields.indexOf('Full name'),value:'Sachin'}]});
@@ -139,12 +153,23 @@ test('free-form goal chooses next steps from the real browser, and drafts withou
   await expect(panel.getByRole('status')).toContainText('Verified 0 of 1 fields');
   await expect(site.getByRole('textbox',{name:'Full name'})).toHaveValue('');
 
+  await run('Fill "Full name" with "Sachin"');
+  await expect(panel.getByRole('region',{name:'Form draft'})).toContainText('Sachin');
+  await expect(site.getByRole('textbox',{name:'Full name'})).toHaveValue('');
+  await decide('Fill these fields');
+  await expect(site.getByRole('textbox',{name:'Full name'})).toHaveValue('Sachin');
+  await expect(site.getByLabel('Password')).toHaveValue('fixture-only-never-read');
+
   await run('Could you open the role details?');
   await expect(panel.getByRole('region',{name:'Link review'})).toContainText('https://example.com/details');
   await expect(site).toHaveURL('https://example.com/');
   await decide('Open this link');
   await expect(site).toHaveURL('https://example.com/details');
-  await expect(panel.getByRole('status')).toContainText('Opened the reviewed link');
+  await expect(panel.getByRole('region',{name:'Disclosure review'})).toContainText('Benefits');
+  await expect(site.locator('details')).not.toHaveAttribute('open','');
+  await decide('Expand and continue');
+  await expect(site.locator('details')).toHaveAttribute('open','');
+  await expect(panel.getByRole('status')).toContainText('Verified: training budget is available.');
 
  }finally{await context.close();await rm(dir,{recursive:true,force:true})}
 });
@@ -156,7 +181,9 @@ test('one Run task button routes to cloud only after review',async({},testInfo)=
  try{
   const worker=context.serviceWorkers()[0]??await context.waitForEvent('serviceworker');
   const site=await context.newPage();
-  await site.route('https://example.com/**',route=>route.fulfill({contentType:'text/html',body:'<!doctype html><main style="height:4500px"><h1>Public fixture</h1><label>Private fixture label <input value="test-only-private-value"></label></main>'}));
+  await site.route('https://example.com/**',route=>route.fulfill({contentType:'text/html',body:route.request().url().endsWith('/guide')
+   ?'<main><h1>Public guide fixture</h1></main>'
+   :'<!doctype html><main style="height:4500px"><h1>Public fixture</h1><a href="/guide">Guide</a><label>Private fixture label <input value="test-only-private-value"></label></main>'}));
   await site.goto('https://example.com/');
   const panel=await context.newPage();
   await panel.goto('chrome-extension://'+new URL(worker.url()).host+'/sidepanel.html');
@@ -170,8 +197,11 @@ test('one Run task button routes to cloud only after review',async({},testInfo)=
    // Stub Chrome's host prompt and the private backend. No real page data or token leaves the fixture.
    globals.chrome.permissions.request=async()=>true;
    globalThis.fetch=async (input,init)=>{
-    globals.fixtureCalls.push({url:String(input),body:JSON.parse(String(init?.body)),authorization:new Headers(init?.headers).get('Authorization')});
-    return new Response(JSON.stringify({decision:{type:'finish',answer:'Cloud fixture answer'}}),{headers:{'Content-Type':'application/json'}});
+    const body=JSON.parse(String(init?.body));
+    globals.fixtureCalls.push({url:String(input),body,authorization:new Headers(init?.headers).get('Authorization')});
+    const decision=body.goal.includes('guide')&&!body.text.includes('Public guide fixture')?
+     {type:'open_link',link:body.links.indexOf('Guide')}:{type:'finish',answer:body.goal.includes('guide')?'Read the public guide.':'Cloud fixture answer'};
+    return new Response(JSON.stringify({decision}),{headers:{'Content-Type':'application/json'}});
    };
   });
   await panel.setViewportSize({width:340,height:900});
@@ -219,5 +249,47 @@ test('one Run task button routes to cloud only after review',async({},testInfo)=
   expect(await calls()).toHaveLength(1);
   await site.reload();
   await expect(review).toHaveCount(0);
+  await command.fill('Find the guide and read it.');
+  await submit();
+  await panel.getByRole('button',{name:'Approve and continue'}).evaluate((button:HTMLButtonElement)=>button.click());
+  await expect(panel.getByRole('region',{name:'Link review'})).toContainText('https://example.com/guide');
+  expect(await calls()).toHaveLength(2);
+  await expect(site).toHaveURL('https://example.com/');
+  await panel.getByRole('button',{name:'Open this link'}).evaluate((button:HTMLButtonElement)=>button.click());
+  await expect(site).toHaveURL('https://example.com/guide');
+  await expect(panel.getByRole('status')).toContainText('Read the public guide.');
+  expect(await calls()).toHaveLength(3);
+ }finally{await context.close();await rm(dir,{recursive:true,force:true})}
+});
+
+test('compound site command opens a separate tab, then reads the verified destination',async()=>{
+ const dir=await mkdtemp(resolve(tmpdir(),'assistant-site-'));
+ const extension=resolve('apps/extension/.output/chrome-mv3-test');
+ const context=await chromium.launchPersistentContext(dir,{channel:'chromium',headless:process.env.PW_HEADLESS==='1',args:['--disable-extensions-except='+extension,'--load-extension='+extension]});
+ try{
+  const worker=context.serviceWorkers()[0]??await context.waitForEvent('serviceworker');
+  await context.route('https://example.com/**',r=>r.fulfill({contentType:'text/html',body:'<main><h1>Documentation fixture</h1></main>'}));
+  const source=await context.newPage();await source.goto('https://example.com/source');
+  const panel=await context.newPage();await panel.goto('chrome-extension://'+new URL(worker.url()).host+'/sidepanel.html');
+  await panel.evaluate(()=>{
+   (globalThis as any).chrome.permissions.request=async({origins}:{origins:string[]})=>origins.length===1&&origins[0]==='https://example.com/*';
+   Object.defineProperty(globalThis,'LanguageModel',{configurable:true,value:{
+    availability:async()=> 'available',
+    create:async()=>({destroy:()=>{},prompt:async(raw:string)=>{
+     const {goal,view}=JSON.parse(raw);
+     if(goal!=='describe the page'||!view.text.includes('Documentation fixture'))throw new Error('Wrong goal or evidence');
+     return '{"type":"finish","answer":"Verified the opened documentation page."}';
+    }}),
+   }});
+  });
+  await panel.getByRole('textbox',{name:'Command'}).fill('Open example.com/docs in a new tab, then describe the page');
+  await source.bringToFront();
+  await panel.evaluate(()=>document.querySelector('form')?.requestSubmit());
+  await expect(panel.getByRole('region',{name:'Website access review'})).toContainText('https://example.com/docs');
+  const opened=context.waitForEvent('page');
+  await panel.getByRole('button',{name:'Open and continue'}).evaluate((button:HTMLButtonElement)=>button.click());
+  await expect(await opened).toHaveURL('https://example.com/docs');
+  await expect(source).toHaveURL('https://example.com/source');
+  await expect(panel.getByRole('status')).toContainText('Verified the opened documentation page.');
  }finally{await context.close();await rm(dir,{recursive:true,force:true})}
 });
