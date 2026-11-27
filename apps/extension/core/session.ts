@@ -10,7 +10,7 @@ const Review=z.discriminatedUnion('type',[
  z.object({type:z.literal('link'),target:LinkTarget}).strict(),
  z.object({type:z.literal('fill'),items:z.array(FieldTarget.extend({value:DraftField.shape.value})).min(1).max(8)}).strict(),
 ]);
-export const Session=z.object({id:z.string(),tabId:z.number().int(),command:z.string(),phase:z.enum(['thinking','acting','waiting-confirmation','success','error','cancelled']),message:z.string(),videoApproval:VideoApproval.optional(),guided:GuidedBinding.optional(),draft:z.array(DraftField).max(8).optional(),review:Review.optional()});
+export const Session=z.object({id:z.string(),tabId:z.number().int(),command:z.string(),phase:z.enum(['thinking','acting','waiting-confirmation','success','answered','needs-input','error','cancelled']),message:z.string(),videoApproval:VideoApproval.optional(),guided:GuidedBinding.optional(),draft:z.array(DraftField).max(8).optional(),review:Review.optional()});
 export type Session=z.infer<typeof Session>;
 export const Request=z.discriminatedUnion('type',[
  z.object({type:z.literal('GET_STATE')}).strict(),
@@ -29,6 +29,6 @@ export const Request=z.discriminatedUnion('type',[
  z.object({type:z.literal('STOP')}).strict(),
  z.object({type:z.literal('SHOW_OVERLAY')}).strict()
 ]);
-export function terminal(s:Session){return ['success','error','cancelled'].includes(s.phase)}
+export function terminal(s:Session){return ['success','answered','needs-input','error','cancelled'].includes(s.phase)}
 export function cancel(s:Session):Session{return terminal(s)?s:{...s,phase:'cancelled',message:'Stopped by user',videoApproval:undefined,guided:undefined,draft:undefined,review:undefined}}
 export function mockPlan(command:string){return {type:'done' as const,summary:'Mock preview: '+command+' (no browser action performed)'}}

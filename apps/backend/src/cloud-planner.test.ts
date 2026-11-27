@@ -6,7 +6,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import type {IncomingMessage} from 'node:http';
 import {PlannerBudget,plannerClientIp} from './planner-budget';
-import {CloudPlannerController,parseCloudStep,parsePlanInput,requestCloudStep} from './cloud-planner';
+import {CloudPlannerController,parseCloudStep,parsePlanInput,parseCloudIntent,parseIntentInput,requestCloudStep} from './cloud-planner';
 const input={goal:'Find the deadline',text:['The deadline is Monday.'],canScrollUp:false,canScrollDown:true,previousDirections:[]};
 test('drops requests outside the minimised contract',()=>{
  assert.deepEqual(parsePlanInput(input),input);
@@ -153,4 +153,21 @@ test('anonymous planner is opt-in and never calls provider without a usable budg
   keys.forEach((k,i)=>{if(old[i]===undefined)delete process.env[k];else process.env[k]=old[i]});
   rmSync(dir,{recursive:true,force:true});
  }
+});
+
+test('intent mode excludes page data and validates indexed destinations and skills',async()=>{
+ const intent={mode:'intent',goal:'Open the docs in a separate tab',sites:['docs.example.org']};
+ assert.deepEqual(parseIntentInput(intent),intent);
+ assert.throws(()=>parseIntentInput({...intent,text:['page prompt']}));
+ assert.throws(()=>parseIntentInput({...intent,sites:['https://example.org/secret']}));
+ assert.throws(()=>parseCloudIntent({intent:'open_site',target:1},1));
+ assert.throws(()=>parseCloudIntent({intent:'open_site',target:0,url:'https://external.example/'},1));
+ assert.throws(()=>parseCloudIntent({intent:'submit'},1));
+ const send:typeof fetch=async(_href,options)=>{
+  const body=JSON.parse(String(options?.body));
+  assert.match(body.input[0].content,/Classify one browser request/);
+  assert.match(body.input[1].content,/docs.example.org/);
+  return new Response(JSON.stringify({status:'completed',output:[{type:'message',content:[{type:'output_text',text:'{"intent":"open_site","target":0}'}]}]}));
+ };
+ assert.deepEqual(await requestCloudStep(parseIntentInput(intent),{apiKey:'fake',model:'fake'},send),{intent:'open_site',target:0});
 });

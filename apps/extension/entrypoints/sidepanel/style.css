@@ -56,8 +56,8 @@ button > svg, summary > svg { flex:none; }
 .result-status p { white-space:pre-wrap; }
 .phase,.badge { white-space:nowrap; border-radius:99px; padding:2px 7px; color:var(--muted); background:var(--faint); font-size:.7rem; font-weight:700; }
 .phase { text-transform:capitalize; white-space:normal; flex-shrink:0; max-width:45%; overflow-wrap:anywhere; }
-.phase[data-phase="success"] { color:var(--good); background:var(--good-bg); }
-.phase[data-phase="thinking"],.phase[data-phase="acting"],.phase[data-phase="waiting-confirmation"] { color:var(--warn); background:var(--warn-bg); }
+.phase[data-phase="answered"],.phase[data-phase="success"] { color:var(--good); background:var(--good-bg); }
+.phase[data-phase="thinking"],.phase[data-phase="acting"],.phase[data-phase="needs-input"],.phase[data-phase="waiting-confirmation"] { color:var(--warn); background:var(--warn-bg); }
 .phase[data-phase="error"],.error { color:var(--danger); background:var(--danger-bg); }
 .error { border-radius:8px; margin-top:8px; padding:6px 8px; overflow-wrap:anywhere; }
 .stop { font-size:.76rem; padding:2px 6px; min-height:30px; }

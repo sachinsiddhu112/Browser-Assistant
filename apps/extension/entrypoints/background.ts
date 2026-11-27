@@ -358,7 +358,7 @@ export default defineBackground(()=>{
      return write({...s,phase:'waiting-confirmation',message:'Review the destination before opening it.',
       guided:g,review:{type:'link',target:link}});
     }
-    return write({...s,phase:'success',message:decision.type==='ask'?decision.question:decision.answer,guided:undefined});
+    return write({...s,phase:decision.type==='ask'?'needs-input':'answered',message:decision.type==='ask'?decision.question:decision.answer,guided:undefined});
    }
    if(req.type==='PLAY_VIDEO'){
     const s=await read();

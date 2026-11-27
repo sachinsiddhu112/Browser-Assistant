@@ -4,11 +4,12 @@ import {Session,terminal} from '../../core/session';
 import {startLocalDictation,suggestOnDevice} from '../../core/on-device';
 import {parseFormIntent} from '../../core/form-intent';
 import {parseSiteIntent} from '../../core/site-intent';
+import {commandSites,intentInstructions,resolveIntent} from '../../core/command-intent';
 import {routeIntent} from '../../core/intent';
 import {GuidedSnapshot} from '../../core/guided-contract';
 import {runGuided} from '../../core/guided-planner';
-import {checkGuidedModel,createGuidedModel,GUIDE_TIMEOUT,type LocalModelAvailability} from '../../core/guided-model';
-import {askCloud,cloudPayload} from '../../core/cloud-client';
+import {checkGuidedModel,createGuidedModel,createLocalTaskModel,GUIDE_TIMEOUT,type LocalModelAvailability} from '../../core/guided-model';
+import {askCloud,askCloudIntent,cloudPayload} from '../../core/cloud-client';
 import {createResultSpeech} from '../../core/result-speech';
 import {parseResearch} from '../../core/research';
 import {ResearchCards,useResearch} from './research-ui';
@@ -40,6 +41,7 @@ function App(){
  const application=useApplication(setSession);
  const [preparing,setPreparing]=useState(false),[listening,setListening]=useState(false),[draftNotice,setDraftNotice]=useState('');
  const [siteReview,setSiteReview]=useState<ReturnType<typeof parseSiteIntent>>(null);
+ const [intentQuestion,setIntentQuestion]=useState('');
  const initialAvailability=useRef<Promise<LocalModelAvailability>|null>(null);
  const [guiding,setGuiding]=useState(false);
  const [noticeHidden,setNoticeHidden]=useState(false);
@@ -57,7 +59,7 @@ function App(){
   return()=>{mounted=false};
  },[]);
  const answer=research.result?{id:research.result.id,text:research.result.answer}:
-  session?.phase==='success'?{id:session.id,text:session.message}:null;
+  (session?.phase==='success'||session?.phase==='answered')?{id:session.id,text:session.message}:null;
  function playResult(value:{id:string;text:string}){
   const state=speaker.speak(value.text,{onError:code=>setSpeechNotice(code==='not-allowed'?'Playback needs a click. Use Play result.':'Could not play the installed voice.')});
   if(state==='queued'){lastSpoken.current=value.id;setSpeechNotice('')}
@@ -115,9 +117,10 @@ function App(){
   setPending(true);setError('');
   try{const r=await browser.runtime.sendMessage({type,...extra});if(!r?.ok)throw new Error(r?.error??'No response');setSession(r.session??null)}catch(e){setError(e instanceof Error?e.message:'Request failed')}finally{setPending(false)}
  }
- async function run(approveSite=false){
+ async function run(approvedSite?:NonNullable<ReturnType<typeof parseSiteIntent>>){
   const goal=command.trim();
   if(!goal||guidedAbort.current||research.busy||research.review||application.busy||application.review||pending||preparing||listening||session&&!terminal(session))return;
+  setIntentQuestion('');setSession(null);
   speaker.cancel();speechArmed.current=true;lastSpoken.current=answer?.id??'';ignoredSession.current=session?.id??'';setSpeechNotice('');
   if(isProfileCommand(goal)){research.clear();application.clear();await send('DRAFT_PROFILE');return}
   const job=applicationIntent(goal);
@@ -128,9 +131,9 @@ function App(){
    if(plan){setSiteReview(null);setError('');await research.start(plan);return}
   }catch(e){setError(e instanceof Error?e.message:'Could not start research.');return}
   research.clear();
-  if(routeIntent(goal)||parseFormIntent(goal)){await send('START',{command:goal});return}
-  const site=parseSiteIntent(goal);
-  if(site&&!approveSite){setSiteReview(site);return}
+  if(!approvedSite&&(routeIntent(goal)||parseFormIntent(goal))){await send('START',{command:goal});return}
+  const site=approvedSite??parseSiteIntent(goal);
+  if(site&&!approvedSite){setSiteReview(site);return}
   setSiteReview(null);
   let plannerGoal=goal;
   let expectedSiteTab:number|undefined;
@@ -160,7 +163,7 @@ function App(){
     const origin=site.origin+'/*';
     if(!await browser.permissions.request({origins:[origin]}))throw new Error('Chrome did not grant access to '+site.origin);
     controller.signal.throwIfAborted();
-    const opened=Session.parse((await message('START',{command:goal})).session);
+    const opened=Session.parse((await message('START',{command:'Open '+site.url})).session);
     const destination=await awaitPhase(opened.id,'success');
     if(!site.goal)return;
     const tab=await browser.tabs.get(destination.tabId);
@@ -178,6 +181,35 @@ function App(){
    controller.signal.throwIfAborted();
    const state=initial==='available'?initial:await checkGuidedModel();
    controller.signal.throwIfAborted();
+   if(!site){
+    const candidates=commandSites(goal);
+    let raw:unknown;
+    if(state==='available'){
+     let classifier:Awaited<ReturnType<typeof createLocalTaskModel>>|undefined;
+     try{
+      classifier=await createLocalTaskModel(intentInstructions,controller.signal);
+      const answer=await classifier.prompt(JSON.stringify({goal,sites:candidates.map(s=>new URL(s.origin).hostname)}),{signal:controller.signal});
+      if(answer.length>1000)throw new Error('Response too long');
+      raw=JSON.parse(answer);
+      resolveIntent(raw,goal,candidates);
+     }catch{raw=undefined;controller.signal.throwIfAborted()}
+     finally{classifier?.destroy()}
+    }
+    if(raw===undefined){
+     const current=await browser.tabs.get(expectedTab.id);
+     if(!current.active||current.url!==expectedTab.url)throw new Error('The active page changed. Run the command again.');
+     if(!current.incognito)raw=await askCloudIntent(goal,candidates,controller.signal);
+    }
+    controller.signal.throwIfAborted();
+    if(raw!==undefined){
+     const intent=resolveIntent(raw,goal,candidates);
+     const current=await browser.tabs.get(expectedTab.id);
+     if(!current.active||current.url!==expectedTab.url)throw new Error('The active page changed. Run the command again.');
+     if(intent.type==='skill'){await send('START',{command:intent.command});return}
+     if(intent.type==='site'){setSiteReview(intent.site);return}
+     if(intent.type==='clarify'){setIntentQuestion(intent.message);return}
+    }
+   }
    if(state==='available'){
     try{model=await createGuidedModel(controller.signal)}
     catch{controller.signal.throwIfAborted();initialAvailability.current=null}
@@ -219,9 +251,9 @@ function App(){
  },[]);
  const running=!!session&&!terminal(session);
  const busy=pending||running||guiding||preparing||listening||research.busy||!!research.review||application.busy||!!application.review;
- const changeCommand=(value:string)=>{setCommand(value);research.clear();application.clear();setSiteReview(null);setDraftNotice('');setError('')};
- const phase=guiding&&!running?'thinking':session?.phase??'idle';
- const result=guiding&&!running?'Preparing the task…':session?.message??'Your result will appear here.';
+ const changeCommand=(value:string)=>{setIntentQuestion('');setCommand(value);research.clear();application.clear();setSiteReview(null);setDraftNotice('');setError('')};
+ const phase=guiding&&!running?'thinking':intentQuestion?'needs-input':siteReview?'waiting-confirmation':session?.phase??'idle';
+ const result=guiding&&!running?'Preparing the task…':intentQuestion||(siteReview?'Review the destination below.':session?.message??'Your result will appear here.');
  return <main className="panel">
   <header className="hero">
    <div className="brand-row"><span className="mark"><Icon name="brand"/></span><span className="eyebrow">CHROME EXTENSION</span></div>
@@ -251,7 +283,7 @@ function App(){
   {siteReview&&<section className="card review" aria-label="Website access review">
    <h2>Open this site in a new tab?</h2><p className="target">{siteReview.url}</p>
    <p className="muted">Chrome may ask for access to this site only. You can revoke it in the extension’s settings.</p>
-   <button className="primary full" type="button" disabled={busy} onClick={()=>void run(true)}>Open and continue <Icon name="arrow"/></button>
+   <button className="primary full" type="button" disabled={busy} onClick={()=>void run(siteReview)}>Open and continue <Icon name="arrow"/></button>
    <button className="quiet full" type="button" onClick={()=>setSiteReview(null)}>Cancel</button>
   </section>}
   <section className="card result" aria-labelledby="result-title">

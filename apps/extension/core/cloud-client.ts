@@ -34,3 +34,13 @@ export async function askCloud(input:ReturnType<typeof cloudPayload>,signal:Abor
  if(decision.type==='draft'||decision.type==='expand')throw new Error('Cloud mode cannot draft or fill form fields.');
  return raw;
 }
+
+// A separate mode on the same budgeted endpoint; no page text or raw URLs.
+export async function askCloudIntent(goal:string,sites:{origin:string}[],signal:AbortSignal,send:typeof fetch=fetch){
+ const response=await send(PLANNER_ORIGIN+'/planner/next',{method:'POST',headers:{'Content-Type':'application/json'},
+  cache:'no-store',credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',
+  body:JSON.stringify({mode:'intent',goal:maskCloudText(goal),sites:sites.map(site=>new URL(site.origin).hostname)}),signal});
+ if(response.status===400)return undefined; // Older deployments can still answer page questions.
+ if(!response.ok)throw new Error(response.status===429?'The cloud request limit was reached. Try again shortly.':'Cloud command routing could not respond.');
+ return (await response.json() as {decision?:unknown}).decision;
+}
