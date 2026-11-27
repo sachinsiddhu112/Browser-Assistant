@@ -9,7 +9,11 @@ import {GuidedSnapshot} from '../../core/guided-contract';
 import {runGuided} from '../../core/guided-planner';
 import {checkGuidedModel,createGuidedModel,GUIDE_TIMEOUT,type LocalModelAvailability} from '../../core/guided-model';
 import {askCloud,cloudPayload} from '../../core/cloud-client';
+import {createResultSpeech} from '../../core/result-speech';
+import {parseResearch} from '../../core/research';
+import {ResearchCards,useResearch} from './research-ui';
 import './style.css';
+const SPEAK_KEY='assistant.speakResults';
 const QUICK_COMMANDS=['Scroll down','Inspect page','YouTube in new tab'];
 function Icon({name}:{name:'brand'|'mic'|'arrow'|'shield'|'settings'|'stop'}){
  const paths={
@@ -23,6 +27,12 @@ function Icon({name}:{name:'brand'|'mic'|'arrow'|'shield'|'settings'|'stop'}){
  return <svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
 }
 function App(){
+ const research=useResearch();
+ const [speakingEnabled,setSpeakingEnabled]=useState(false),[speechNotice,setSpeechNotice]=useState('');
+ const [speaker]=useState(createResultSpeech);
+ const [voicesRevision,setVoicesRevision]=useState(0);
+ const lastSpoken=useRef(''),ignoredSession=useRef(''),speechArmed=useRef(false),speechPreferenceTouched=useRef(false);
+ const [draftValues,setDraftValues]=useState<string[]>([]);
  const [session,setSession]=useState<Session|null>(null),[command,setCommand]=useState(''),[error,setError]=useState(''),[pending,setPending]=useState(false);
  const [preparing,setPreparing]=useState(false),[listening,setListening]=useState(false),[draftNotice,setDraftNotice]=useState('');
  const [siteReview,setSiteReview]=useState<ReturnType<typeof parseSiteIntent>>(null);
@@ -33,8 +43,50 @@ function App(){
  const modelAbort=useRef<AbortController|null>(null),stopSpeech=useRef<(()=>void)|null>(null);
  useEffect(()=>{
   initialAvailability.current=checkGuidedModel();
-  return()=>{modelAbort.current?.abort();guidedAbort.current?.abort();stopSpeech.current?.()};
+  return()=>{modelAbort.current?.abort();guidedAbort.current?.abort();stopSpeech.current?.();speaker.cancel()};
+ },[speaker]);
+ useEffect(()=>{
+  let mounted=true;
+  void browser.storage.local.get(SPEAK_KEY).then(values=>{
+   if(mounted&&!speechPreferenceTouched.current)setSpeakingEnabled(values[SPEAK_KEY]===true);
+  }).catch(()=>{});
+  return()=>{mounted=false};
  },[]);
+ const answer=research.result?{id:research.result.id,text:research.result.answer}:
+  session?.phase==='success'?{id:session.id,text:session.message}:null;
+ function playResult(value:{id:string;text:string}){
+  const state=speaker.speak(value.text,{onError:code=>setSpeechNotice(code==='not-allowed'?'Playback needs a click. Use Play result.':'Could not play the installed voice.')});
+  if(state==='queued'){lastSpoken.current=value.id;setSpeechNotice('')}
+  if(state==='unavailable')setSpeechNotice('No on-device voice is available. You can still read the result.');
+ }
+ useEffect(()=>{
+  if(!speakingEnabled||!speechArmed.current||listening||!answer||(lastSpoken.current===answer.id||ignoredSession.current===answer.id))return;
+  playResult(answer);
+ },[speakingEnabled,listening,answer?.id,answer?.text,speaker,voicesRevision]);
+ useEffect(()=>{
+  if(!speakingEnabled)return;
+  const synth=globalThis.speechSynthesis;
+  const refresh=()=>{
+   if(speaker.hasLocalVoice()){
+    setSpeechNotice(notice=>notice.startsWith('No on-device voice')?'':notice);
+    setVoicesRevision(version=>version+1);
+   }
+  };
+  synth?.addEventListener?.('voiceschanged',refresh);
+  return()=>synth?.removeEventListener?.('voiceschanged',refresh);
+ },[speaker,speakingEnabled]);
+ function toggleSpeech(){
+  const enabled=!speakingEnabled;
+  speechPreferenceTouched.current=true;
+  setSpeechNotice('');setSpeakingEnabled(enabled);
+  void browser.storage.local.set({[SPEAK_KEY]:enabled}).catch(()=>{});
+  if(!enabled){speaker.cancel();return}
+  if(answer){speechArmed.current=true;lastSpoken.current='';ignoredSession.current=''}
+  if(!speaker.hasLocalVoice())setSpeechNotice('No on-device voice is available. You can still read the result.');
+ }
+ useEffect(()=>{
+  setDraftValues(session?.draft?.map(field=>field.value)??[]);
+ },[session?.id,session?.draft?.length]);
  async function prepare(){
   if(preparing||listening||!command.trim())return;
   setSiteReview(null);setPreparing(true);setError('');setDraftNotice('');
@@ -49,7 +101,7 @@ function App(){
  }
  async function dictate(){
   if(listening){stopSpeech.current?.();return}
-  setSiteReview(null);setListening(true);setError('');setDraftNotice('');
+  speaker.cancel();setSiteReview(null);setListening(true);setError('');setDraftNotice('');
   try{stopSpeech.current=await startLocalDictation(
    text=>{setCommand(text);setDraftNotice('Dictated on this device. Review the draft before running it.')},
    reason=>{stopSpeech.current=null;setListening(false);if(reason)setError(reason)},
@@ -61,7 +113,13 @@ function App(){
  }
  async function run(approveSite=false){
   const goal=command.trim();
-  if(!goal||guidedAbort.current||pending||preparing||listening||session&&!terminal(session))return;
+  if(!goal||guidedAbort.current||research.busy||research.review||pending||preparing||listening||session&&!terminal(session))return;
+  speaker.cancel();speechArmed.current=true;lastSpoken.current=answer?.id??'';ignoredSession.current=session?.id??'';setSpeechNotice('');
+  try{
+   const plan=parseResearch(goal);
+   if(plan){setSiteReview(null);setError('');await research.start(plan);return}
+  }catch(e){setError(e instanceof Error?e.message:'Could not start research.');return}
+  research.clear();
   if(routeIntent(goal)||parseFormIntent(goal)){await send('START',{command:goal});return}
   const site=parseSiteIntent(goal);
   if(site&&!approveSite){setSiteReview(site);return}
@@ -142,7 +200,7 @@ function App(){
  }
  function stop(){
   if(siteReview){setSiteReview(null);return}
-  guidedAbort.current?.abort('stopped');
+  speaker.cancel();guidedAbort.current?.abort('stopped');
   void send('STOP');
  }
  useEffect(()=>{
@@ -152,8 +210,8 @@ function App(){
   };
  },[]);
  const running=!!session&&!terminal(session);
- const busy=pending||running||guiding||preparing||listening;
- const changeCommand=(value:string)=>{setCommand(value);setSiteReview(null);setDraftNotice('');setError('')};
+ const busy=pending||running||guiding||preparing||listening||research.busy||!!research.review;
+ const changeCommand=(value:string)=>{setCommand(value);research.clear();setSiteReview(null);setDraftNotice('');setError('')};
  const phase=guiding&&!running?'thinking':session?.phase??'idle';
  const result=guiding&&!running?'Preparing the task…':session?.message??'Your result will appear here.';
  return <main className="panel">
@@ -171,13 +229,13 @@ function App(){
 
   <form className="composer card" noValidate onSubmit={e=>{e.preventDefault();if(!siteReview)void run()}}>
    <label htmlFor="command">Command</label>
-   <textarea id="command" maxLength={1000} placeholder="What would you like to do on this page?" value={command} disabled={preparing||listening||guiding||running} onChange={e=>changeCommand(e.target.value)}/>
+   <textarea id="command" maxLength={1000} placeholder="Try Scroll down or Research a topic" value={command} disabled={preparing||listening||guiding||running||research.busy} onChange={e=>changeCommand(e.target.value)}/>
    <div className="examples" aria-label="Example commands">
     {QUICK_COMMANDS.map(label=><button className="chip" key={label} type="button" disabled={busy} onClick={()=>changeCommand(label==='YouTube in new tab'?'Open YouTube in a new tab':label)}>{label}</button>)}
    </div>
    <div className="composer-actions">
     {!siteReview&&<button className="primary" type="submit" disabled={busy||!command.trim()}>Run task <Icon name="arrow"/></button>}
-    <button className="secondary mic" type="button" disabled={pending||running||guiding||preparing} onClick={()=>void dictate()} title={listening?'Stop listening':'Dictate locally (English)'} aria-label={listening?'Stop listening':'Dictate locally (English)'}><Icon name="mic"/>{listening?'Stop listening':'Dictate'}</button>
+    <button className="secondary mic" type="button" disabled={pending||running||guiding||preparing||research.busy} onClick={()=>void dictate()} title={listening?'Stop listening':'Dictate locally (English)'} aria-label={listening?'Stop listening':'Dictate locally (English)'}><Icon name="mic"/>{listening?'Stop listening':'Dictate'}</button>
    </div>
    {draftNotice&&<p className="muted helper">{draftNotice}</p>}
   </form>
@@ -190,11 +248,15 @@ function App(){
   </section>}
   <section className="card result" aria-labelledby="result-title">
    <div className="result-head"><h2 id="result-title">Task result</h2>
+    <button className="quiet speech-toggle" type="button" aria-label="Speak results" aria-pressed={speakingEnabled} onClick={toggleSpeech}>Speak results: {speakingEnabled?'On':'Off'}</button>
     {(running||guiding)&&<button className="quiet stop" type="button" onClick={stop}><Icon name="stop"/>Stop task</button>}
    </div>
    <div className="result-status" role="status"><span className="phase" data-phase={phase}>{phase}</span><p className="result-message" key={phase}>{result}</p></div>
    {error&&<p className="error" role="alert">{error}</p>}
+   {speechNotice&&<p className="muted helper" role="status">{speechNotice}</p>}
+   {speakingEnabled&&answer&&speechNotice.startsWith('Playback needs')&&<button className="secondary" type="button" onClick={()=>playResult(answer)}>Play result</button>}
   </section>
+  <ResearchCards research={research}/>
 
   {session?.phase==='waiting-confirmation'&&session.videoApproval&&<section className="card review" aria-label="YouTube choices">
    <h2>Choose a YouTube result</h2>
@@ -202,9 +264,11 @@ function App(){
   </section>}
   {session?.draft&&<section className="card review" aria-label="Form draft">
    <h2>Review form draft</h2>{session.guided&&<p className="target">{new URL(session.guided.url).origin}</p>}
-   <dl>{session.draft.map((field,i)=><React.Fragment key={i}><dt>{field.label}</dt><dd>{field.value}</dd></React.Fragment>)}</dl>
+   <div className="draft-fields">{session.draft.map((field,i)=><label key={i}>{field.label}
+    <input type="text" value={draftValues[i]??field.value} maxLength={160} onChange={e=>{const value=e.currentTarget.value;setDraftValues(values=>values.map((v,j)=>j===i?value:v))}}/>
+   </label>)}</div>
    <p className="muted">The site can react to entered text immediately. Review every value. Upload files and submit on the website yourself.</p>
-   <button className="primary full" type="button" disabled={pending||guiding} onClick={()=>void send('APPROVE_GUIDED',{sessionId:session.id})}>Fill these fields</button>
+   <button className="primary full" type="button" disabled={pending||guiding||draftValues.length!==session.draft.length||draftValues.some(x=>!x.trim())} onClick={()=>void send('APPROVE_GUIDED',{sessionId:session.id,values:draftValues})}>Fill these fields</button>
   </section>}
   {session?.review?.type==='expand'&&<section className="card review" aria-label="Disclosure review">
    <h2>Expand this section?</h2><p>{session.review.target.label}</p>

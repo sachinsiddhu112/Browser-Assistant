@@ -241,6 +241,7 @@ export default defineBackground(()=>{
      const t=await browser.tabs.get(s.tabId);
      if(!t.active||t.url!==g.url||Date.now()>=g.expiresAt)return failure('The page or review expired. Start again.');
      const target={tabId:s.tabId,documentIds:[g.documentId]};
+     if(req.values&&review.type!=='fill')return failure('This review cannot accept field values.');
      if(review.type==='expand'){
       if(g.mode!=='local')return failure('Only local mode can expand a disclosure');
       const [r]=await browser.scripting.executeScript({target,func:readGuidedViewport,args:[{type:'expand',...review.target}]});
@@ -249,7 +250,9 @@ export default defineBackground(()=>{
      }
      if(review.type==='fill'){
       if(g.mode!=='local')return failure('Cloud mode cannot enter form data');
-      const [r]=await browser.scripting.executeScript({target,func:readGuidedViewport,args:[{type:'fill',items:review.items}]});
+      if(req.values&&req.values.length!==review.items.length)return failure('The edited draft no longer matches the reviewed fields.');
+      const items=review.items.map((item,i)=>({...item,value:req.values?.[i]??item.value}));
+      const [r]=await browser.scripting.executeScript({target,func:readGuidedViewport,args:[{type:'fill',items}]});
       const count=r?.result?.kind==='filled'?r.result.count:0;
       if(count!==review.items.length)return failure('Verified '+count+' of '+review.items.length+' fields. Check the page before continuing; nothing was submitted by the extension.');
       return write({...s,...clear,phase:'success',message:'Filled '+count+' reviewed fields. You control file uploads and submission on the website.'});

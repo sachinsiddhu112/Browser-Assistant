@@ -17,7 +17,7 @@ export const Request=z.discriminatedUnion('type',[
  z.object({type:z.literal('START_GUIDED'),mode:z.literal('local').default('local'),expectedTab:z.object({id:z.number().int().nonnegative(),url:z.string().url()}).strict().optional()}).strict(),
  z.object({type:z.literal('START_CLOUD'),mode:z.literal('cloud'),expectedTab:z.object({id:z.number().int().nonnegative(),url:z.string().url()}).strict()}).strict(),
  z.object({type:z.literal('RESUME_GUIDED'),sessionId:z.string().uuid()}).strict(),
- z.object({type:z.literal('APPROVE_GUIDED'),sessionId:z.string().uuid()}).strict(),
+ z.object({type:z.literal('APPROVE_GUIDED'),sessionId:z.string().uuid(),values:z.array(DraftField.shape.value).min(1).max(8).optional()}).strict(),
  z.object({type:z.literal('STEP_GUIDED'),sessionId:z.string().uuid(),decision:GuidedDecision}).strict(),
  z.object({type:z.literal('FAIL_GUIDED'),sessionId:z.string().uuid()}).strict(),
  z.object({type:z.literal('STOP')}).strict(),

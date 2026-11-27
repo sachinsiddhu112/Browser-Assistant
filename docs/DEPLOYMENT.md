@@ -36,6 +36,13 @@ pnpm build
 4. Repeat a guided link task and press **Stop task** while the link is waiting for
    approval. The page must not change.
 
+5. Run **Compare NestJS and Fastify docs on request validation**. Select two
+   public results, approve access, and check that the comparison includes source
+   links and leaves both pages open. Use two direct HTTPS links if Google shows
+   a consent page or the results do not match.
+6. Turn **Speak results** on and run a task; turn it off while it reads. If no
+   device voice is installed, the result remains visible instead.
+
 To make a zip for a private install or future Store submission:
 `pnpm --filter @browser-assistant/extension zip`.
 

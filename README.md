@@ -5,7 +5,9 @@ compatible installations, on-device English dictation and intent suggestions.
 The extension can search, scroll, inspect pages, navigate tabs, and let you
 choose a YouTube result to open. Guided tasks can continue after approved
 same-site links. Form drafts can be reviewed and filled locally; the extension
-does not submit forms.
+does not submit forms. Use `Research …` or `Compare …` to review and compare up
+to three public sources, and **Speak results** to hear answers through an
+installed device voice.
 
 Requires Node.js 22 and pnpm 10. Run `corepack enable`, then
 `pnpm install --frozen-lockfile` and `pnpm build`. Load the generated

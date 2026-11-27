@@ -77,3 +77,18 @@ Direct commands and guided tasks use Chrome's native smooth scroll and wait for
 movement to settle before reporting success or reading the next viewport. Real
 page input interrupts the guided scroll. Reduced-motion preferences switch
 scrolling to instant and remove nonessential side-panel and overlay motion.
+
+## Research and spoken results
+
+- Start with “Research …” or “Compare …”. Review up to three public Google
+  results before granting access to their exact sites. Alternatively include
+  two or three direct public HTTPS links in the command.
+- The selected pages open in separate tabs and stay open. The assistant
+  ranks bounded page excerpts locally, including headings, lists and table
+  rows. The answer refers to numbered source links verified by the extension.
+  The assistant skips unreadable or redirected pages instead of treating them
+  as evidence. Search and cloud fallback should only be used for public topics.
+- Form values are editable in the approval card. No form submission is added.
+- The **Speak results** toggle defaults to off and is available next to Task
+  result. It uses only an installed on-device voice, cancels on disable, next
+  task, or dictation, and leaves written results available with no local voice.

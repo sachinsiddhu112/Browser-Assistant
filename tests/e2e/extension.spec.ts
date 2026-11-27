@@ -162,8 +162,10 @@ test('free-form goal chooses next steps from the real browser, and drafts withou
    await site.bringToFront();
    await panel.getByRole('button',{name:label,exact:true}).evaluate((button:HTMLButtonElement)=>button.click());
   };
+  await panel.getByRole('region',{name:'Form draft'}).getByRole('textbox',{name:'Full name'}).fill('Sachin Siddhu');
+  await expect(site.getByRole('textbox',{name:'Full name'})).toHaveValue('');
   await decide('Fill these fields');
-  await expect(site.getByRole('textbox',{name:'Full name'})).toHaveValue('Sachin');
+  await expect(site.getByRole('textbox',{name:'Full name'})).toHaveValue('Sachin Siddhu');
   await expect(panel.getByRole('status')).toContainText('Filled 1 reviewed fields');
   await site.getByRole('textbox',{name:'Full name'}).fill('');
 
@@ -312,5 +314,68 @@ test('compound site command opens a separate tab, then reads the verified destin
   await panel.evaluate(()=>(globalThis as any).releaseFixture());
   await expect(source).toHaveURL('https://example.com/source');
   await expect(panel.getByRole('status')).toContainText('Verified the opened documentation page.');
+ }finally{await context.close();await rm(dir,{recursive:true,force:true})}
+});
+
+test('research selects two sites, compares verified evidence and speaks the result on demand',async()=>{
+ const dir=await mkdtemp(resolve(tmpdir(),'assistant-research-'));
+ const extension=resolve('apps/extension/.output/chrome-mv3-test');
+ const context=await chromium.launchPersistentContext(dir,{channel:'chromium',headless:process.env.PW_HEADLESS==='1',args:['--disable-extensions-except='+extension,'--load-extension='+extension]});
+ try{
+  const worker=context.serviceWorkers()[0]??await context.waitForEvent('serviceworker');
+  await context.route('https://www.google.com/search?*',r=>r.fulfill({contentType:'text/html',body:
+   '<main><a href="https://example.com/framework"><h3>Framework one</h3></a><a href="https://example.org/framework"><h3>Framework two</h3></a><a href="https://example.net/private"><h3>Unselected result</h3></a></main>'}));
+  await context.route(/https:\/\/example\.(com|org)\/.*/,r=>{
+   const first=new URL(r.request().url()).hostname==='example.com';
+   const heading=first?'Framework one validation':'Framework two validation';
+   return r.fulfill({contentType:'text/html',body:'<title>'+heading+'</title><main><h1>'+heading+'</h1><table><tr><th>Defaults</th><td>'+(first?'Schema A':'Schema B')+'</td></tr></table><form><label>Private field<input value="secret-fixture-only"></label></form></main>'});
+  });
+  // Allow deterministic fixture interception for tabs created by the Chrome API.
+  context.on('page',p=>void p.waitForLoadState('domcontentloaded').catch(()=>{}));
+  const source=await context.newPage();await source.goto('https://example.com/');
+  const panel=await context.newPage();await panel.goto('chrome-extension://'+new URL(worker.url()).host+'/sidepanel.html');
+  await panel.evaluate(()=>{
+   const globals=globalThis as any;
+   globals.fixture={spoken:[],requests:[],grants:[],cancelled:0};
+   Object.defineProperty(globalThis,'LanguageModel',{configurable:true,value:{availability:async()=> 'unavailable'}});
+   globals.chrome.permissions.request=async({origins}:{origins:string[]})=>{globals.fixture.grants.push(origins);return true};
+   Object.defineProperty(globalThis,'speechSynthesis',{configurable:true,value:{
+    addEventListener:()=>{},removeEventListener:()=>{},
+    getVoices:()=>[{localService:true,lang:'en-US',name:'Local test voice'}],
+    speak:(u:{text:string})=>globals.fixture.spoken.push(u.text),
+    cancel:()=>globals.fixture.cancelled++,
+   }});
+   globalThis.fetch=async (_input,init)=>{
+    const body=JSON.parse(String(init?.body));globals.fixture.requests.push(body);
+    if(!body.text.includes('Source 1: Defaults | Schema A')||!body.text.includes('Source 2: Defaults | Schema B'))throw new Error('Missing evidence from both sites');
+    return new Response(JSON.stringify({decision:{type:'finish',answer:'Source 1 uses Schema A. Source 2 uses Schema B.'}}));
+   };
+  });
+  const get=()=>panel.evaluate(()=>(globalThis as any).fixture);
+  await expect(panel.getByRole('button',{name:'Speak results'})).toHaveAttribute('aria-pressed','false');
+  await panel.getByRole('button',{name:'Speak results'}).evaluate((button:HTMLButtonElement)=>button.click());
+  await panel.getByRole('textbox',{name:'Command'}).fill('Compare request validation in two frameworks');
+  await source.bringToFront();
+  await panel.evaluate(()=>document.querySelector('form')?.requestSubmit());
+  const review=panel.getByRole('region',{name:'Research sources'});
+  await expect(review).toContainText('Framework one');
+  expect((await get()).requests).toHaveLength(0);
+  await review.getByRole('checkbox').nth(0).check();
+  await review.getByRole('checkbox').nth(1).check();
+  await review.getByRole('button',{name:'Open and read selected sources'}).click();
+  const result=panel.getByRole('region',{name:'Research result'});
+  await expect(result).toContainText('Source 1 uses Schema A.');
+  await expect(result.getByRole('link')).toHaveCount(2);
+  await expect(result.getByRole('link').first()).toHaveAttribute('href','https://example.com/framework');
+  await expect(result.getByRole('link').last()).toHaveAttribute('href','https://example.org/framework');
+  expect(context.pages().map(page=>page.url())).toEqual(expect.arrayContaining(['https://example.com/framework','https://example.org/framework']));
+  expect(context.pages().map(page=>page.url())).not.toContain('https://example.net/private');
+  await expect.poll(async()=>(await get()).spoken).toEqual(['Source 1 uses Schema A. Source 2 uses Schema B.']);
+  const recorded=await get();
+  expect(recorded.grants).toEqual([['https://example.com/*','https://example.org/*']]);
+  expect(JSON.stringify(recorded.requests)).not.toContain('secret-fixture-only');
+  await panel.getByRole('button',{name:'Speak results'}).click();
+  await expect(panel.getByRole('button',{name:'Speak results'})).toHaveAttribute('aria-pressed','false');
+  expect((await get()).cancelled).toBe(1);
  }finally{await context.close();await rm(dir,{recursive:true,force:true})}
 });
