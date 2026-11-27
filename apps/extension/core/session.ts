@@ -1,3 +1,4 @@
+import {ChatNote} from './working-chat';
 import {Profile,ProfileTarget} from './profile';
 import {z} from 'zod';
 import {DraftField,FieldTarget,LinkTarget,GuidedDecision} from './guided-contract';
@@ -10,9 +11,13 @@ const Review=z.discriminatedUnion('type',[
  z.object({type:z.literal('link'),target:LinkTarget}).strict(),
  z.object({type:z.literal('fill'),items:z.array(FieldTarget.extend({value:DraftField.shape.value})).min(1).max(8)}).strict(),
 ]);
-export const Session=z.object({id:z.string(),tabId:z.number().int(),command:z.string(),phase:z.enum(['thinking','acting','waiting-confirmation','success','answered','needs-input','error','cancelled']),message:z.string(),videoApproval:VideoApproval.optional(),guided:GuidedBinding.optional(),draft:z.array(DraftField).max(8).optional(),review:Review.optional()});
+export const Session=z.object({id:z.string(),windowId:z.number().int().nonnegative().optional(),turnId:z.string().uuid().optional(),followupPage:ChatNote.shape.page,tabId:z.number().int(),command:z.string(),phase:z.enum(['thinking','acting','waiting-confirmation','success','answered','needs-input','error','cancelled']),message:z.string(),videoApproval:VideoApproval.optional(),guided:GuidedBinding.optional(),draft:z.array(DraftField).max(8).optional(),review:Review.optional()});
 export type Session=z.infer<typeof Session>;
 export const Request=z.discriminatedUnion('type',[
+ z.object({type:z.literal('CHAT_GET')}).strict(),
+ z.object({type:z.literal('CHAT_BEGIN'),input:z.string().trim().min(1).max(1000)}).strict(),
+ z.object({type:z.literal('CHAT_NOTE'),turnId:z.string().uuid(),note:ChatNote,resumes:z.string().uuid().optional()}).strict(),
+ z.object({type:z.literal('CHAT_RESET')}).strict(),
  z.object({type:z.literal('GET_STATE')}).strict(),
  z.object({type:z.literal('GET_PROFILE')}).strict(),
  z.object({type:z.literal('SAVE_PROFILE'),profile:Profile}).strict(),
@@ -20,8 +25,8 @@ export const Request=z.discriminatedUnion('type',[
  z.object({type:z.literal('DRAFT_PROFILE'),expectedTab:z.object({id:z.number().int().nonnegative(),url:z.string().url()}).strict().optional()}).strict(),
  z.object({type:z.literal('START'),command:z.string().trim().min(1).max(1000),expectedTab:z.object({id:z.number().int().nonnegative(),url:z.string().url()}).strict().optional()}).strict(),
  z.object({type:z.literal('PLAY_VIDEO'),sessionId:z.string().uuid(),videoId:z.string().regex(/^[\w-]{11}$/)}).strict(),
- z.object({type:z.literal('START_GUIDED'),mode:z.literal('local').default('local'),expectedTab:z.object({id:z.number().int().nonnegative(),url:z.string().url()}).strict().optional()}).strict(),
- z.object({type:z.literal('START_CLOUD'),mode:z.literal('cloud'),expectedTab:z.object({id:z.number().int().nonnegative(),url:z.string().url()}).strict()}).strict(),
+ z.object({type:z.literal('START_GUIDED'),resumePage:ChatNote.shape.page,mode:z.literal('local').default('local'),expectedTab:z.object({id:z.number().int().nonnegative(),url:z.string().url()}).strict().optional()}).strict(),
+ z.object({type:z.literal('START_CLOUD'),resumePage:ChatNote.shape.page,mode:z.literal('cloud'),expectedTab:z.object({id:z.number().int().nonnegative(),url:z.string().url()}).strict()}).strict(),
  z.object({type:z.literal('RESUME_GUIDED'),sessionId:z.string().uuid()}).strict(),
  z.object({type:z.literal('APPROVE_GUIDED'),sessionId:z.string().uuid(),values:z.array(DraftField.shape.value.nullable()).min(1).max(8).optional()}).strict(),
  z.object({type:z.literal('STEP_GUIDED'),sessionId:z.string().uuid(),decision:GuidedDecision}).strict(),

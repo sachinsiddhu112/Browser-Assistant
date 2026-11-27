@@ -1,10 +1,11 @@
+import {chatKey,chatSources,modelContext,pendingQuestion,taskKey,WorkingChat,type ChatNote} from '../../core/working-chat';
 import React,{useEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Session,terminal} from '../../core/session';
 import {startLocalDictation,suggestOnDevice} from '../../core/on-device';
 import {parseFormIntent} from '../../core/form-intent';
 import {parseSiteIntent} from '../../core/site-intent';
-import {commandSites,intentInstructions,resolveIntent} from '../../core/command-intent';
+import {commandSites,intentInstructions,resolveIntent,resumesPending} from '../../core/command-intent';
 import {normalizePlatform,routeIntent} from '../../core/intent';
 import {GuidedSnapshot} from '../../core/guided-contract';
 import {runGuided} from '../../core/guided-planner';
@@ -42,6 +43,26 @@ function App(){
  const [preparing,setPreparing]=useState(false),[listening,setListening]=useState(false),[draftNotice,setDraftNotice]=useState('');
  const [siteReview,setSiteReview]=useState<ReturnType<typeof parseSiteIntent>>(null);
  const [intentQuestion,setIntentQuestion]=useState('');
+ const [chat,setChat]=useState<WorkingChat|null>(null);
+ const [resetting,setResetting]=useState(false);
+ const windowRef=useRef<number|undefined>(undefined),chatTurn=useRef<string|undefined>(undefined);
+ const startingChat=useRef(false);
+ const workingContextRef=useRef<string|undefined>(undefined);
+ async function rawMessage(type:string,extra:object={},track=true){
+  const windowId=windowRef.current??(await browser.windows.getCurrent()).id;
+  if(windowId===undefined)throw new Error('The Chrome window is unavailable.');
+  windowRef.current=windowId;
+  const taskTurnId=track?chatTurn.current:undefined;
+  const r=await browser.runtime.sendMessage({type,windowId,...(taskTurnId?{taskTurnId}:{}),...extra});
+  if(!r?.ok)throw new Error(r?.error??'Browser task did not respond');
+  return r;
+ }
+ async function noteChat(note:ChatNote,resumes?:string){
+  const turnId=chatTurn.current;
+  if(!turnId)return;
+  await rawMessage('CHAT_NOTE',{turnId,note,...(resumes?{resumes}:{})},false);
+ }
+
  const initialAvailability=useRef<Promise<LocalModelAvailability>|null>(null);
  const [guiding,setGuiding]=useState(false);
  const [noticeHidden,setNoticeHidden]=useState(false);
@@ -115,11 +136,26 @@ function App(){
  }
  async function send(type:string,extra:object={}){
   setPending(true);setError('');
-  try{const r=await browser.runtime.sendMessage({type,...extra});if(!r?.ok)throw new Error(r?.error??'No response');setSession(r.session??null)}catch(e){setError(e instanceof Error?e.message:'Request failed')}finally{setPending(false)}
+  try{const r=await rawMessage(type,extra);setSession(r.session??null)}catch(e){setError(e instanceof Error?e.message:'Request failed')}finally{setPending(false)}
  }
  async function run(approvedSite?:NonNullable<ReturnType<typeof parseSiteIntent>>){
   const goal=command.trim();
-  if(!goal||guidedAbort.current||research.busy||research.review||application.busy||application.review||pending||preparing||listening||session&&!terminal(session))return;
+  if(startingChat.current||resetting||!goal||guidedAbort.current||research.busy||research.review||application.busy||application.review||pending||preparing||listening||session&&!terminal(session))return;
+  let past:WorkingChat|null=null;
+  if(!approvedSite){
+   startingChat.current=true;
+   try{
+    const current=await browser.windows.getCurrent();
+    if(!current.incognito){
+     const started=await rawMessage('CHAT_BEGIN',{input:goal},false);
+     chatTurn.current=started.turn?.id;
+     past=WorkingChat.parse(started.past);
+     workingContextRef.current=past.turns.length?modelContext(past):undefined;
+     setChat(WorkingChat.parse(started.chat));
+    }else{chatTurn.current=undefined;workingContextRef.current=undefined}
+   }catch(e){setError(e instanceof Error?e.message:'Could not start the temporary chat.');return}
+   finally{startingChat.current=false}
+  }
   setIntentQuestion('');setSession(null);
   speaker.cancel();speechArmed.current=true;lastSpoken.current=answer?.id??'';ignoredSession.current=session?.id??'';setSpeechNotice('');
   if(isProfileCommand(goal)){research.clear();application.clear();await send('DRAFT_PROFILE');return}
@@ -128,7 +164,7 @@ function App(){
   application.clear();
   try{
    const plan=parseResearch(goal);
-   if(plan){setSiteReview(null);setError('');await research.start(plan);return}
+   if(plan){setSiteReview(null);setError('');await research.start(plan,workingContextRef.current);return}
   }catch(e){setError(e instanceof Error?e.message:'Could not start research.');return}
   research.clear();
   if(!approvedSite&&(routeIntent(goal)||parseFormIntent(goal))){await send('START',{command:goal});return}
@@ -137,16 +173,13 @@ function App(){
   setSiteReview(null);
   let plannerGoal=goal;
   let expectedSiteTab:number|undefined;
+  let resumePage:ChatNote['page'];
 
   const controller=new AbortController();
   guidedAbort.current=controller;setGuiding(true);setError('');setDraftNotice('');
   const timer=setTimeout(()=>controller.abort('timeout'),GUIDE_TIMEOUT);
   let model:Awaited<ReturnType<typeof createGuidedModel>>|undefined;
-  const message=async(type:string,extra:object={})=>{
-   const r=await browser.runtime.sendMessage({type,...extra});
-   if(!r?.ok)throw new Error(r?.error??'Browser task did not respond');
-   return r;
-  };
+  const message=(type:string,extra:object={})=>rawMessage(type,extra);
   async function awaitPhase(id:string,expected:'success'|'thinking'){
    while(true){
     controller.signal.throwIfAborted();
@@ -170,7 +203,7 @@ function App(){
     if(!tab.active||tab.url!==site.url)throw new Error('The requested page changed while opening it');
     plannerGoal=site.goal;expectedSiteTab=destination.tabId;
    }
-   const [selected]=await browser.tabs.query({active:true,currentWindow:true});
+   const [selected]=await browser.tabs.query({active:true,windowId:windowRef.current});
    controller.signal.throwIfAborted();
    if(selected?.id===undefined||!selected.url?.startsWith('https:'))throw new Error('Select an HTTPS page and open the extension from its toolbar icon.');
    if(expectedSiteTab!==undefined&&(selected.id!==expectedSiteTab||selected.url!==site?.url))throw new Error('The opened page changed');
@@ -183,35 +216,56 @@ function App(){
    controller.signal.throwIfAborted();
    if(!site){
     const candidates=commandSites(goal);
+    const waiting=past?pendingQuestion(past):undefined;
+    const sources=past?chatSources(past):[];
+    const contextSites=sources.flatMap(source=>{
+     const site=parseSiteIntent('Open '+source.url);
+     return site?[site]:[];
+    });
+    const workingChat=workingContextRef.current;
+    const resolve=(proposal:unknown)=>{
+     const resume=resumesPending(proposal);
+     if(resume&&!waiting)throw new Error('There is no pending clarification to resume.');
+     return {resume,intent:resolveIntent(proposal,resume?waiting!.request+' '+goal:goal,candidates,contextSites)};
+    };
     const intentGoal=normalizePlatform(goal);
     let raw:unknown;
     if(state==='available'){
      let classifier:Awaited<ReturnType<typeof createLocalTaskModel>>|undefined;
      try{
       classifier=await createLocalTaskModel(intentInstructions,controller.signal);
-      const answer=await classifier.prompt(JSON.stringify({goal:intentGoal,sites:candidates.map(s=>new URL(s.origin).hostname)}),{signal:controller.signal});
+      const answer=await classifier.prompt(JSON.stringify({goal:intentGoal,sites:candidates.map(s=>new URL(s.origin).hostname),...(workingChat?{workingChat:JSON.parse(workingChat)}:{})}),{signal:controller.signal});
       if(answer.length>1000)throw new Error('Response too long');
       raw=JSON.parse(answer);
-      resolveIntent(raw,goal,candidates);
+      resolve(raw);
      }catch{raw=undefined;controller.signal.throwIfAborted()}
      finally{classifier?.destroy()}
     }
     if(raw===undefined){
      const current=await browser.tabs.get(expectedTab.id);
      if(!current.active||current.url!==expectedTab.url)throw new Error('The active page changed. Run the command again.');
-     if(!current.incognito)raw=await askCloudIntent(intentGoal,candidates,controller.signal);
+     if(!current.incognito)raw=await askCloudIntent(intentGoal,candidates,controller.signal,fetch,workingChat);
     }
     controller.signal.throwIfAborted();
     if(raw!==undefined){
-     const intent=resolveIntent(raw,goal,candidates);
+     const {intent,resume}=resolve(raw);
+     if(resume&&waiting){
+      await noteChat({kind:'status',result:'Continuing the pending request with this answer.'},waiting.id);
+      controller.signal.throwIfAborted();
+     }
      const current=await browser.tabs.get(expectedTab.id);
      if(!current.active||current.url!==expectedTab.url)throw new Error('The active page changed. Run the command again.');
      if(intent.type==='skill'){await send('START',{command:intent.command,expectedTab});return}
      if(intent.type==='profile'){await send('DRAFT_PROFILE',{expectedTab});return}
      if(intent.type==='job'){await application.start(intent.job);return}
-     if(intent.type==='research'){await research.start(intent.plan);return}
+     if(intent.type==='research'){await research.start(intent.plan,workingContextRef.current);return}
      if(intent.type==='site'){setSiteReview(intent.site);return}
-     if(intent.type==='clarify'){setIntentQuestion(intent.message);return}
+     if(intent.type==='clarify'){await noteChat({kind:'question',result:intent.message},resume?waiting?.id:undefined);setIntentQuestion(intent.message);return}
+     if(resume&&waiting){
+      workingContextRef.current=modelContext(past!,goal);
+      resumePage=waiting.page;
+      plannerGoal=waiting.request;
+     }
     }
    }
    if(state==='available'){
@@ -221,7 +275,7 @@ function App(){
    const ready=model;
    await runGuided({
     begin:async()=>{
-     const r=await (ready?message('START_GUIDED',{expectedTab}):message('START_CLOUD',{mode:'cloud',expectedTab}));
+     const r=await (ready?message('START_GUIDED',{expectedTab,...(resumePage?{resumePage}:{})}):message('START_CLOUD',{mode:'cloud',expectedTab,...(resumePage?{resumePage}:{})}));
      return {sessionId:Session.parse(r.session).id,snapshot:GuidedSnapshot.parse(r.snapshot)};
     },
     step:async(sessionId,decision)=>{
@@ -233,8 +287,8 @@ function App(){
      return r.snapshot===undefined?undefined:GuidedSnapshot.parse(r.snapshot);
     },
     fail:async sessionId=>{await message('FAIL_GUIDED',{sessionId})},
-   }, input=>ready?ready.propose(plannerGoal,input)
-     :askCloud(cloudPayload(plannerGoal,input.snapshot,input.previous),input.signal),controller.signal);
+   }, input=>ready?ready.propose(plannerGoal,{...input,workingChat:workingContextRef.current})
+     :askCloud(cloudPayload(plannerGoal,input.snapshot,input.previous,workingContextRef.current),input.signal),controller.signal);
   }catch(e){
    if(controller.signal.reason==='timeout')setError('The guided task timed out. Try a narrower request.');
    else if(!controller.signal.aborted)setError(e instanceof Error?e.message:'The guided task stopped.');
@@ -249,27 +303,57 @@ function App(){
   if(application.busy)application.stop();
   void send('STOP');
  }
+ async function resetChat(){
+  if(resetting||startingChat.current)return;
+  setResetting(true);
+  guidedAbort.current?.abort('new chat');research.stop();application.stop();speaker.cancel();
+  modelAbort.current?.abort();stopSpeech.current?.();chatTurn.current=undefined;workingContextRef.current=undefined;
+  try{
+   const r=await rawMessage('CHAT_RESET',{},false);
+   setChat(WorkingChat.parse(r.chat));setSession(null);research.clear();application.clear();
+   setCommand('');setIntentQuestion('');setSiteReview(null);setError('');setDraftNotice('');
+  }catch(e){setError(e instanceof Error?e.message:'Could not clear the current chat.')}
+  finally{setResetting(false)}
+ }
  useEffect(()=>{
-  const listener=(changes:Record<string,{newValue?:unknown}>,area:string)=>{if(area==='session'&&changes['assistant.session']){const p=Session.safeParse(changes['assistant.session'].newValue);setSession(p.success?p.data:null)}};
-  browser.storage.onChanged.addListener(listener);void send('GET_STATE');return()=>{
-   browser.storage.onChanged.removeListener(listener);
+  let mounted=true;
+  const listener=(changes:Record<string,{newValue?:unknown}>,area:string)=>{
+   const windowId=windowRef.current;
+   if(area!=='session'||windowId===undefined)return;
+   if(changes[taskKey(windowId)]){
+    const p=Session.safeParse(changes[taskKey(windowId)].newValue);setSession(p.success?p.data:null);
+   }
+   if(changes[chatKey(windowId)]){
+    const p=WorkingChat.safeParse(changes[chatKey(windowId)].newValue);setChat(p.success?p.data:null);
+   }
   };
+  browser.storage.onChanged.addListener(listener);
+  void rawMessage('CHAT_GET',{},false).then(r=>{if(mounted)setChat(WorkingChat.parse(r.chat))}).catch(()=>{});
+  void send('GET_STATE');
+  return()=>{mounted=false;browser.storage.onChanged.removeListener(listener)};
  },[]);
+ useEffect(()=>{
+   if(!research.result)return;
+  void noteChat({kind:research.result.question?'question':'result',result:research.result.answer.slice(0,600),sources:research.result.sources}).catch(()=>{});
+ },[research.result?.id]);
  const running=!!session&&!terminal(session);
- const busy=pending||running||guiding||preparing||listening||research.busy||!!research.review||application.busy||!!application.review;
+ const busy=resetting||pending||running||guiding||preparing||listening||research.busy||!!research.review||application.busy||!!application.review;
  const changeCommand=(value:string)=>{setIntentQuestion('');setCommand(value);research.clear();application.clear();setSiteReview(null);setDraftNotice('');setError('')};
- const phase=guiding&&!running?'thinking':intentQuestion?'needs-input':siteReview?'waiting-confirmation':session?.phase??'idle';
- const result=guiding&&!running?'Preparing the task…':intentQuestion||(siteReview?'Review the destination below.':session?.message??'Your result will appear here.');
+ const savedQuestion=chat?.turns.at(-1)?.note;
+ const question=intentQuestion||(!session&&savedQuestion?.kind==='question'?savedQuestion.result:'');
+ const phase=guiding&&!running?'thinking':siteReview?'waiting-confirmation':question?'needs-input':session?.phase??'idle';
+ const result=guiding&&!running?'Preparing the task…':siteReview?'Review the destination below.':question||(session?.message??'Your result will appear here.');
  return <main className="panel">
   <header className="hero">
    <div className="brand-row"><span className="mark"><Icon name="brand"/></span><span className="eyebrow">CHROME EXTENSION</span></div>
    <h1>Browser Assistant</h1>
    <p>Read pages and navigate with your approval.</p>
+   <button className="quiet" type="button" disabled={resetting||pending} onClick={()=>void resetChat()}>New chat</button>
   </header>
 
   <aside className="card privacy-note" aria-label="Privacy note" hidden={noticeHidden}>
    <Icon name="shield"/>
-   <p>Some tasks may send your command and visible page excerpts to our online service. Use public pages and non-confidential commands.</p>
+   <p>Some tasks may send your command and visible page excerpts to our online service, along with relevant recent context. Use public pages and non-confidential commands.</p>
    <button className="quiet" type="button" onClick={()=>setNoticeHidden(true)} aria-label="Hide privacy note">Hide</button>
   </aside>
 

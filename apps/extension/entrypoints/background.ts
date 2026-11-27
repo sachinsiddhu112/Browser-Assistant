@@ -1,3 +1,4 @@
+import {addChatNote,beginChatTurn,chatKey,freshChat,taskKey,WorkingChat} from '../core/working-chat';
 import {inspectYouTubePlayer,readYouTubeChoices,sameYouTubeDestination} from '../core/youtube';
 import {inspectProfileForm,matchSavedDetails,Profile,ProfileTarget,ProfileValuesKey,emptyProfile} from '../core/profile';
 import {parseFormIntent} from '../core/form-intent';
@@ -9,7 +10,6 @@ import {GUIDED_TIMEOUT_MS,splitCapture,MAX_GUIDED_STEPS,labelDraft} from '../cor
 import {readGuidedViewport} from '../core/guided-page';
 import {movePage} from '../core/scroll-motion';
 export default defineBackground(()=>{
- const key='assistant.session';
  // The restriction must succeed before serving any profile operation.
  const profileAccess=Promise.resolve().then(()=>Promise.all(
   [browser.storage.local,browser.storage.session].map(area=>
@@ -17,17 +17,37 @@ export default defineBackground(()=>{
  )).then(()=>true,()=>false);
  let queue:Promise<unknown>=Promise.resolve();
  function serial<T>(fn:()=>Promise<T>):Promise<T>{const next=queue.then(fn,fn);queue=next.catch(()=>{});return next}
- async function read(){const p=Session.safeParse((await browser.storage.session.get(key))[key]);return p.success?p.data:null}
- async function write(s:Session){await browser.storage.session.set({[key]:s});await browser.tabs.sendMessage(s.tabId,{type:'STATE',phase:s.phase}).catch(()=>{});return s}
- async function activeTab(needsPage=true){
-  const [t]=await browser.tabs.query({active:true,currentWindow:true});
+ async function read(windowId:number){
+  const key=taskKey(windowId);
+  const p=Session.safeParse((await browser.storage.session.get(key))[key]);
+  return p.success?p.data:null;
+ }
+ async function readChat(windowId:number){
+  const key=chatKey(windowId);
+  const parsed=WorkingChat.safeParse((await browser.storage.session.get(key))[key]);
+  return parsed.success?parsed.data:freshChat();
+ }
+ async function write(s:Session){
+  if(s.windowId===undefined)throw new Error('Task has no browser window');
+  const update:Record<string,unknown>={[taskKey(s.windowId)]:s};
+  if(s.turnId&&terminal(s)&&s.phase!=='cancelled'){
+   const before=await readChat(s.windowId);
+   const after=addChatNote(before,s.turnId,{kind:s.phase==='needs-input'&&s.command==='Guided task'?'question':s.phase==='error'?'status':'result',result:s.message.slice(0,600),...(s.followupPage?{page:s.followupPage}:{})});
+   if(before!==after)update[chatKey(s.windowId)]=after;
+  }
+  await browser.storage.session.set(update);
+  await browser.tabs.sendMessage(s.tabId,{type:'STATE',phase:s.phase}).catch(()=>{});
+  return s;
+ }
+ async function activeTab(windowId:number,needsPage=true){
+  const [t]=await browser.tabs.query({active:true,windowId});
   if(t?.id===undefined)throw new Error('No active Chrome tab is available');
   if(needsPage&&!/^https?:/.test(t.url??''))throw new Error('Select a regular website and activate the extension');
   return t.id;
  }
  async function inject(tabId:number){await browser.scripting.executeScript({target:{tabId},files:['/overlay.js']})}
- async function step<T>(s:Session,fn:()=>Promise<T>):Promise<T>{return serial(async()=>{const c=await read();if(c?.id!==s.id||terminal(c))throw new Error('Task stopped');return fn()})}
- async function finish(s:Session,phase:'success'|'error'|'needs-input',message:string){await serial(async()=>{const c=await read();if(c?.id===s.id&&!terminal(c))await write({...c,phase,message,videoApproval:undefined,guided:undefined,draft:undefined,review:undefined})})}
+ async function step<T>(s:Session,fn:()=>Promise<T>):Promise<T>{return serial(async()=>{const c=await read(s.windowId!);if(c?.id!==s.id||terminal(c))throw new Error('Task stopped');if((await browser.tabs.get(c.tabId)).windowId!==s.windowId)throw new Error('The browser tab moved to another window. Start again.');return fn()})}
+ async function finish(s:Session,phase:'success'|'error'|'needs-input',message:string){await serial(async()=>{const c=await read(s.windowId!);if(c?.id===s.id&&!terminal(c))await write({...c,phase,message,videoApproval:undefined,guided:undefined,draft:undefined,review:undefined})})}
  async function waitFor<T>(s:Session,fn:()=>Promise<T|undefined>,polls=40):Promise<T>{for(let i=0;i<polls;i++){const r=await step(s,fn);if(r!==undefined)return r;await new Promise(r=>setTimeout(r,250))}throw new Error('Timed out verifying browser state')}
  async function navigate(s:Session,url:string,expectedSource?:string){
   if(!allowedNavigation(url))throw new Error('Navigation denied');
@@ -205,27 +225,69 @@ export default defineBackground(()=>{
      canScrollUp:fresh.snapshot.canScrollUp,canScrollDown:fresh.snapshot.canScrollDown}}));
   }catch{await finish(s,'error','Could not verify and read the reviewed destination. Check the tab before continuing.')}
  }
- void serial(async()=>{const s=await read();if(s&&!terminal(s))await write({...s,phase:'error',message:'Worker restarted; start a new task',videoApproval:undefined,guided:undefined,draft:undefined,review:undefined})});
+ void serial(async()=>{
+  const all=await browser.storage.session.get(null);
+  for(const [key,value] of Object.entries(all)){
+   if(!key.startsWith('assistant.session.'))continue;
+   const parsed=Session.safeParse(value);
+   if(parsed.success&&!terminal(parsed.data)){
+    const s=parsed.data;
+    // Review data can survive idle worker restarts; approval re-checks the live document and expiry.
+    if(s.phase==='waiting-confirmation')continue;
+    await write({...s,phase:'error',message:'The browser worker restarted. Run the next step again.',videoApproval:undefined,guided:undefined,draft:undefined,review:undefined});
+   }
+  }
+ }).catch(()=>{});
+ browser.windows.onRemoved.addListener(windowId=>{void serial(()=>browser.storage.session.remove([taskKey(windowId),chatKey(windowId)])).catch(()=>{})});
  browser.sidePanel.setPanelBehavior({openPanelOnActionClick:true}).catch(console.error);
  browser.runtime.onMessage.addListener((raw,sender,respond)=>{
   if(sender.id!==browser.runtime.id||sender.url!==browser.runtime.getURL('/sidepanel.html'))return false;
-  const p=Request.safeParse(raw);if(!p.success)return false;
+  if(!raw||typeof raw!=='object')return false;
+  const {windowId:requestedWindow,taskTurnId:requestedTurn,...payload}=raw as Record<string,unknown>;
+  const p=Request.safeParse(payload);if(!p.success)return false;
+  if(requestedWindow!==undefined&&(!Number.isInteger(requestedWindow)||Number(requestedWindow)<0))return false;
+  if(requestedTurn!==undefined&&(typeof requestedTurn!=='string'||!/^[-0-9a-f]{36}$/i.test(requestedTurn)))return false;
   void serial(async()=>{
    const req=p.data;
-   if(req.type==='GET_STATE')return read();
+   const windowId=typeof requestedWindow==='number'?requestedWindow:sender.tab?.windowId??(await browser.windows.getLastFocused()).id;
+   if(windowId===undefined||(sender.tab&&sender.tab.windowId!==windowId))throw new Error('The Chrome window is unavailable');
+   const turnId=typeof requestedTurn==='string'?requestedTurn:undefined;
+   if(req.type==='CHAT_GET'||req.type==='CHAT_BEGIN'||req.type==='CHAT_NOTE'||req.type==='CHAT_RESET'){
+    if(!await profileAccess)throw new Error('Chrome could not protect chat storage.');
+    const window=await browser.windows.get(windowId);
+    if(window.incognito){
+     if(req.type==='CHAT_GET')return {chat:freshChat()};
+     throw new Error('Temporary chat context is unavailable in incognito.');
+    }
+    if(req.type==='CHAT_RESET'){
+     await browser.storage.session.remove([chatKey(windowId),taskKey(windowId)]);
+     return {chat:freshChat()};
+    }
+    const chat=await readChat(windowId);
+    if(req.type==='CHAT_GET')return {chat};
+    if(req.type==='CHAT_BEGIN'){
+     const started=beginChatTurn(chat,req.input);
+     await browser.storage.session.set({[chatKey(windowId)]:started.chat});
+     return {chat:started.chat,past:started.past,turn:started.turn};
+    }
+    const next=addChatNote(chat,req.turnId,req.note,req.resumes);
+    if(next!==chat)await browser.storage.session.set({[chatKey(windowId)]:next});
+    return {chat:next};
+   }
+   if(req.type==='GET_STATE')return read(windowId);
    if(req.type==='GET_PROFILE'||req.type==='SAVE_PROFILE'||req.type==='DELETE_PROFILE'||req.type==='DRAFT_PROFILE'){
     if(!await profileAccess)throw new Error('Chrome could not protect local profile storage.');
-    const tabId=await activeTab(false),tab=await browser.tabs.get(tabId);
+    const tabId=await activeTab(windowId,false),tab=await browser.tabs.get(tabId);
     if(tab.incognito)throw new Error('Saved details are unavailable in incognito.');
     if(req.type==='SAVE_PROFILE'){await browser.storage.local.set({[ProfileValuesKey]:req.profile});return {profile:req.profile}}
     if(req.type==='DELETE_PROFILE'){
      await browser.storage.local.remove(ProfileValuesKey);
-     const pending=await read();if(pending?.review?.type==='profile')await write(cancel(pending));
+     const pending=await read(windowId);if(pending?.review?.type==='profile')await write(cancel(pending));
      return {profile:emptyProfile};
     }
     const profile=Profile.safeParse((await browser.storage.local.get(ProfileValuesKey))[ProfileValuesKey]);
     if(req.type==='GET_PROFILE')return {profile:profile.success?profile.data:emptyProfile};
-    const old=await read();if(old&&!terminal(old))throw new Error('Stop the current task first.');
+    const old=await read(windowId);if(old&&!terminal(old))throw new Error('Stop the current task first.');
     if(!profile.success||!Object.values(profile.data).some(Boolean))throw new Error('Add your contact details under Saved details first.');
     if(!tab.url?.startsWith('https:')||(req.expectedTab&&(tabId!==req.expectedTab.id||tab.url!==req.expectedTab.url)))throw new Error('The approved page is not active.');
     const [r]=await browser.scripting.executeScript({target:{tabId},func:inspectProfileForm});
@@ -234,17 +296,17 @@ export default defineBackground(()=>{
     const fields=ProfileTarget.array().max(30).parse(r.result.fields);
     const items=matchSavedDetails(profile.data,fields);
     if(!items.length)throw new Error('No unambiguous empty contact fields were found in a supported form. The page is open for manual entry.');
-    return {session:await write({id:crypto.randomUUID(),tabId,command:'Saved details draft',phase:'waiting-confirmation',
+    return {session:await write({id:crypto.randomUUID(),windowId,turnId,tabId,command:'Saved details draft',phase:'waiting-confirmation',
      message:'Review the saved details before filling. Nothing has been entered.',
      guided:{documentId:r.documentId,url:tab.url,expiresAt:Date.now()+90_000,steps:0,mode:'local',fields:[],links:[],canScrollDown:false,canScrollUp:false},
      draft:items.map(({label,value})=>({label,value})),review:{type:'profile',items}})};
    }
-   if(req.type==='STOP'){const s=await read();return s?write(cancel(s)):null}
-   if(req.type==='SHOW_OVERLAY'){const tab=await activeTab();await inject(tab);const s=await read();if(s?.tabId===tab)await browser.tabs.sendMessage(tab,{type:'STATE',phase:s.phase}).catch(()=>{});return s}
+   if(req.type==='STOP'){const s=await read(windowId);return s?write(cancel(s)):null}
+   if(req.type==='SHOW_OVERLAY'){const tab=await activeTab(windowId);await inject(tab);const s=await read(windowId);if(s?.tabId===tab)await browser.tabs.sendMessage(tab,{type:'STATE',phase:s.phase}).catch(()=>{});return s}
    if(req.type==='START'&&parseFormIntent(req.command)){
-    const old=await read();
+    const old=await read(windowId);
     if(old&&!terminal(old))throw new Error('Stop the current task first');
-    const tabId=await activeTab(),tab=await browser.tabs.get(tabId);
+    const tabId=await activeTab(windowId),tab=await browser.tabs.get(tabId);
     if(!tab.url?.startsWith('https:'))throw new Error('Form review is limited to HTTPS pages');
     const [r]=await browser.scripting.executeScript({target:{tabId},func:readGuidedViewport});
     const after=await browser.tabs.get(tabId);
@@ -255,35 +317,37 @@ export default defineBackground(()=>{
      if(matches.length!==1)throw new Error('Could not find exactly one eligible, empty field named '+label);
      return {...matches[0],value};
     });
-    return write({id:crypto.randomUUID(),tabId,command:'Form draft',phase:'waiting-confirmation',message:'Draft ready. Nothing was entered or submitted.',
+    return write({id:crypto.randomUUID(),windowId,turnId,tabId,command:'Form draft',phase:'waiting-confirmation',message:'Draft ready. Nothing was entered or submitted.',
      guided:{documentId:r.documentId,url:tab.url,expiresAt:Date.now()+90_000,steps:0,mode:'local',fields,links,
       canScrollDown:snapshot.canScrollDown,canScrollUp:snapshot.canScrollUp},
      draft:items.map(({label,value})=>({label,value})),review:{type:'fill',items}});
    }
    if(req.type==='START_GUIDED'||req.type==='START_CLOUD'){
-    const old=await read();
+    const old=await read(windowId);
     if(old&&!terminal(old))throw new Error('Stop the current task first');
-    const tabId=await activeTab();
+    const tabId=await activeTab(windowId);
     const tab=await browser.tabs.get(tabId);
     if(req.expectedTab&&(req.expectedTab.id!==tabId||req.expectedTab.url!==tab.url||!tab.active)){
      throw new Error('The active page changed. Start the task again.');
     }
     if(!tab.url?.startsWith('https:'))throw new Error('The reader is limited to HTTPS pages');
     if(req.mode==='cloud'&&tab.incognito)throw new Error('Online assistance is disabled in incognito tabs.');
-    const [captured]=await browser.scripting.executeScript({target:{tabId},func:readGuidedViewport});
+    const bound=req.resumePage;
+    if(bound&&(bound.tabId!==tabId||bound.url!==tab.url))throw new Error('Return to the original tab to continue this request.');
+    const [captured]=await browser.scripting.executeScript({target:{tabId,...(bound?{documentIds:[bound.documentId]}:{})},func:readGuidedViewport});
     const after=await browser.tabs.get(tabId);
-    if(!captured?.documentId||!after.active||after.url!==tab.url)throw new Error('The page changed while reading it; start again');
+    if(!captured?.documentId||(bound&&captured.documentId!==bound.documentId)||!after.active||after.url!==tab.url)throw new Error('The page changed while reading it; start again');
     const {snapshot,fields,links,disclosures}=splitCapture(captured.result);
     const {canScrollDown,canScrollUp}=snapshot;
-    const session=await write({id:crypto.randomUUID(),tabId,command:'Guided task',phase:'thinking',message:'Reading this page',
+    const session=await write({id:crypto.randomUUID(),windowId,turnId,tabId,command:'Guided task',phase:'thinking',message:'Reading this page',
      guided:{documentId:captured.documentId,url:tab.url,expiresAt:Date.now()+GUIDED_TIMEOUT_MS,steps:0,visited:[tab.url],fields,links,disclosures,mode:req.mode,canScrollDown,canScrollUp}});
     return {session,snapshot};
    }
    if(req.type==='RESUME_GUIDED'){
-    const s=await read();
+    const s=await read(windowId);
     if(!s||s.id!==req.sessionId||!s.guided||s.phase!=='thinking')throw new Error('The reviewed task cannot continue');
     const g=s.guided,t=await browser.tabs.get(s.tabId);
-    if(!t.active||t.url!==g.url||Date.now()>=g.expiresAt)throw new Error('The active page or time limit changed');
+    if(t.windowId!==s.windowId||!t.active||t.url!==g.url||Date.now()>=g.expiresAt)throw new Error('The active page or time limit changed');
     const [r]=await browser.scripting.executeScript({target:{tabId:s.tabId,documentIds:[g.documentId]},func:readGuidedViewport});
     const {snapshot,fields,links,disclosures}=splitCapture(r?.result);
     const after=await browser.tabs.get(s.tabId);
@@ -291,14 +355,14 @@ export default defineBackground(()=>{
     return {session:await write({...s,guided:{...g,fields,links,disclosures,canScrollUp:snapshot.canScrollUp,canScrollDown:snapshot.canScrollDown}}),snapshot};
    }
    if(req.type==='APPROVE_GUIDED'){
-    const s=await read();
+    const s=await read(windowId);
     if(!s||s.id!==req.sessionId||s.phase!=='waiting-confirmation'||!s.guided||!s.review)throw new Error('No matching action to approve');
     const {review,guided:g}=s;
     const clear={guided:undefined,review:undefined,draft:undefined};
     const failure=(message:string)=>write({...s,...clear,phase:'error',message});
     try{
      const t=await browser.tabs.get(s.tabId);
-     if(!t.active||t.url!==g.url||Date.now()>=g.expiresAt)return failure('The page or review expired. Start again.');
+     if(t.windowId!==s.windowId||!t.active||t.url!==g.url||Date.now()>=g.expiresAt)return failure('The page or review expired. Start again.');
      const target={tabId:s.tabId,documentIds:[g.documentId]};
      if(req.values&&review.type!=='fill'&&review.type!=='profile')return failure('This review cannot accept field values.');
      if(review.type==='expand'){
@@ -339,7 +403,7 @@ export default defineBackground(()=>{
     }catch{return failure('The reviewed action could not be verified. Check the page before retrying.')}
    }
    if(req.type==='STEP_GUIDED'||req.type==='FAIL_GUIDED'){
-    const s=await read();
+    const s=await read(windowId);
     if(!s||s.id!==req.sessionId||terminal(s)||!s.guided||(req.type==='STEP_GUIDED'&&s.phase!=='thinking'))throw new Error('The guided task is no longer active');
     const stop=(message:string)=>write({...s,phase:'error',message,guided:undefined,draft:undefined,review:undefined});
     if(req.type==='FAIL_GUIDED')return stop('The guided task ended without a result');
@@ -385,14 +449,14 @@ export default defineBackground(()=>{
      return write({...s,phase:'waiting-confirmation',message:'Review the destination before opening it.',
       guided:g,review:{type:'link',target:link}});
     }
-    return write({...s,phase:decision.type==='ask'?'needs-input':'answered',message:decision.type==='ask'?decision.question:decision.answer,guided:undefined});
+    return write({...s,phase:decision.type==='ask'?'needs-input':'answered',message:decision.type==='ask'?decision.question:decision.answer,followupPage:decision.type==='ask'?{tabId:s.tabId,url:g.url,documentId:g.documentId,completedSteps:g.steps}:undefined,guided:undefined});
    }
    if(req.type==='PLAY_VIDEO'){
-    const s=await read();
+    const s=await read(windowId);
     const approval=s?.videoApproval;
     if(s?.id!==req.sessionId||s.phase!=='waiting-confirmation'||!approval)throw new Error('There is no matching pending choice');
     const tab=await browser.tabs.get(s.tabId);
-    if(approval.expiresAt<=Date.now()||!sameYouTubeDestination(tab.url,approval.sourceUrl)||!tab.active){
+    if(approval.expiresAt<=Date.now()||tab.windowId!==s.windowId||!sameYouTubeDestination(tab.url,approval.sourceUrl)||!tab.active){
      return write({...s,videoApproval:undefined,phase:'error',message:'The search changed or the choice expired. Start a new task.'});
     }
     if(!approval.choices.some(c=>c.id===req.videoId))throw new Error('That video was not offered for this task');
@@ -401,14 +465,14 @@ export default defineBackground(()=>{
     setTimeout(()=>{void playVideo(next,url,approval.sourceUrl).catch(console.error)},0);
     return next;
    }
-   const old=await read();if(old&&!terminal(old))throw new Error('Stop the current task first');
-   const tabId=await activeTab(routeIntent(req.command)?.type!=='open_youtube_tab'&&!parseSiteIntent(req.command));
+   const old=await read(windowId);if(old&&!terminal(old))throw new Error('Stop the current task first');
+   const tabId=await activeTab(windowId,routeIntent(req.command)?.type!=='open_youtube_tab'&&!parseSiteIntent(req.command));
    if(req.expectedTab){
     const tab=await browser.tabs.get(tabId);
     if(req.expectedTab.id!==tabId||req.expectedTab.url!==tab.url||!tab.active)throw new Error('The active page changed. Run the command again.');
    }
-   const s=await write({id:crypto.randomUUID(),tabId,command:req.command,phase:'thinking',message:'Routing local command'});
+   const s=await write({id:crypto.randomUUID(),windowId,turnId,tabId,command:req.command,phase:'thinking',message:'Routing local command'});
    setTimeout(()=>{void execute(s).catch(console.error)},0);return s;
-  }).then(result=>respond(result&&('session' in result||'profile' in result)?{ok:true,...result}:{ok:true,session:result}),e=>respond({ok:false,error:e instanceof Error?e.message:'Request failed'}));return true;
+  }).then(result=>respond(result&&('session' in result||'profile' in result||'chat' in result)?{ok:true,...result}:{ok:true,session:result}),e=>respond({ok:false,error:e instanceof Error?e.message:'Request failed'}));return true;
  });
 });

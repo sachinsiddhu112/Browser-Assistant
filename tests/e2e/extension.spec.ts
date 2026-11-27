@@ -293,7 +293,8 @@ test('one Run task click uses automatic fallback and retains link review',async(
   await expect(panel.getByRole('button',{name:'Approve and continue'})).toHaveCount(0);
   const requests=await calls();
   expect(requests).toHaveLength(2);
-  expect(requests[0].body).toEqual({mode:'intent',goal:'Tell me about the visible fixture.',sites:[]});
+  expect(requests[0].body).toMatchObject({mode:'intent',goal:'Tell me about the visible fixture.',sites:[]});
+  expect(JSON.parse(requests[0].body.workingChat).recent).toContainEqual({request:'Scroll down',kind:'result',output:'Page scrolled'});
   expect(requests[0].url).toBe('https://browser-assistant-api-production.up.railway.app/planner/next');
   expect(requests[0].authorization).toBeNull();
   expect(requests[0].body.goal).toBe('Tell me about the visible fixture.');
@@ -318,7 +319,7 @@ test('one Run task click uses automatic fallback and retains link review',async(
    Object.defineProperty(globalThis,'LanguageModel',{configurable:true,value:{availability:async()=> 'unavailable'}});
    globalThis.fetch=async(_input,init)=>{
     const body=JSON.parse(String(init?.body));
-    if(body.mode!=='intent'||Object.keys(body).length!==3||body.goal!=='Please pop YouTube into its own tab')throw new Error('Expected minimized command-only request');
+    if(body.mode!=='intent'||body.goal!=='Please pop YouTube into its own tab')throw new Error('Expected minimized command-only request');
     return new Response('{"decision":{"intent":"youtube_tab"}}');
    };
   });
@@ -562,5 +563,61 @@ test('YouTube uses verified results after a URL rewrite and attempts only select
   await expect(panel.getByRole('status')).toContainText('could not find a playable result',{timeout:22_000});
   await expect(panel.getByRole('status')).toContainText('needs-input');
   expect(watchLoads).toBe(1);
+ }finally{await context.close();await rm(dir,{recursive:true,force:true})}
+});
+
+test('temporary chat restores follow-up context, permits a different task and resets',async()=>{
+ const dir=await mkdtemp(resolve(tmpdir(),'assistant-chat-'));
+ const extension=resolve('apps/extension/.output/chrome-mv3-test');
+ const context=await chromium.launchPersistentContext(dir,{channel:'chromium',headless:process.env.PW_HEADLESS==='1',
+  args:['--disable-extensions-except='+extension,'--load-extension='+extension]});
+ try{
+  const worker=context.serviceWorkers()[0]??await context.waitForEvent('serviceworker');
+  const source=await context.newPage();
+  await source.route('https://example.com/chat',r=>r.fulfill({contentType:'text/html',body:'<main style="height:3500px"><h1>Event details</h1><p>Registration closes Friday.</p><p>The event is on Monday.</p></main>'}));
+  await source.goto('https://example.com/chat');
+  const panel=await context.newPage();await panel.goto('chrome-extension://'+new URL(worker.url()).host+'/sidepanel.html');
+  const mock=()=>panel.evaluate(()=>{
+   Object.defineProperty(globalThis,'LanguageModel',{configurable:true,value:{availability:async()=> 'available',
+    create:async()=>({destroy:()=>{},prompt:async(raw:string)=>{
+     const {goal,view,workingChat}=JSON.parse(raw);
+     if(!view){
+      if(goal==='The registration deadline'){
+       if(workingChat.pending.request!=='Find the date shown here'||!workingChat.recent.some((t:any)=>t.request==='Scroll down'&&t.output==='Page scrolled'))throw new Error('Missing conversation context');
+       return '{"intent":"guided","resume":true}';
+      }
+      if(goal==='What heading is visible here?'&&workingChat)throw new Error('New chat leaked old context');
+      return '{"intent":"guided"}';
+     }
+     if(goal==='What heading is visible here?')return '{"type":"finish","answer":"Event details."}';
+     if(goal==='Find the date shown here'&&workingChat?.pending?.answer==='The registration deadline')
+      return '{"type":"finish","answer":"Registration closes Friday."}';
+     return '{"type":"ask","question":"Which date should I find?"}';
+    }}),
+   }});
+   globalThis.fetch=async()=>{throw new Error('The local fixture must not call the cloud')};
+  });
+  const run=async (command:string)=>{
+   await panel.getByRole('textbox',{name:'Command'}).fill(command);
+   await source.bringToFront();
+   await panel.evaluate(()=>document.querySelector('form')?.requestSubmit());
+  };
+  const status=panel.getByRole('status').first();
+  await mock();
+  await run('Find the date shown here');
+  await expect(status).toContainText('Which date should I find?');
+  await panel.reload();await mock();
+  await expect(status).toContainText('Which date should I find?');
+  await run('Scroll down');
+  await expect(status).toContainText('Page scrolled');
+  const before=await source.evaluate(()=>scrollY);
+  expect(before).toBeGreaterThan(0);
+  await run('The registration deadline');
+  await expect(status).toContainText('Registration closes Friday.');
+  expect(await source.evaluate(()=>scrollY)).toBe(before);
+  await panel.getByRole('button',{name:'New chat'}).click();
+  await expect(status).toContainText('Your result will appear here.');
+  await run('What heading is visible here?');
+  await expect(status).toContainText('Event details.');
  }finally{await context.close();await rm(dir,{recursive:true,force:true})}
 });

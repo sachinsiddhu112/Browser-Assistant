@@ -5,8 +5,8 @@ import {askCloud,cloudPayload} from '../../core/cloud-client';
 import {checkGuidedModel,createGuidedModel} from '../../core/guided-model';
 
 type Plan=NonNullable<ReturnType<typeof parseResearch>>;
-type Review={plan:Plan;sources:ResearchSource[];ids:number[];windowId:number};
-type Answer={id:string;answer:string;sources:ResearchSource[];skipped:number};
+type Review={plan:Plan;workingChat?:string;sources:ResearchSource[];ids:number[];windowId:number};
+type Answer={id:string;answer:string;question?:boolean;sources:ResearchSource[];skipped:number};
 
 async function waitLoaded(id:number,url:string,signal:AbortSignal){
  for(let i=0;i<70;i++){
@@ -46,7 +46,7 @@ export function useResearch(){
  useEffect(()=>()=>current.current?.abort(),[]);
  const clear=()=>{setReview(null);setResult(null);setStatus('');setError('')};
  function stop(){current.current?.abort();setReview(null);setStatus('Research stopped.')}
- async function start(plan:Plan){
+ async function start(plan:Plan,workingChat?:string){
   if(current.current)return;
   clear();
   const ctl=new AbortController();current.current=ctl;
@@ -55,7 +55,7 @@ export function useResearch(){
    if(!anchor||anchor.incognito)throw new Error('Select a regular browser window before starting research.');
    ctl.signal.throwIfAborted();
    if(plan.direct.length){
-    setReview({plan,sources:plan.direct,ids:plan.direct.map((_,i)=>i),windowId:anchor.windowId});
+    setReview({plan,workingChat,sources:plan.direct,ids:plan.direct.map((_,i)=>i),windowId:anchor.windowId});
     return;
    }
    setBusy(true);setStatus('Searching Google for public sources…');
@@ -67,7 +67,7 @@ export function useResearch(){
    if(latest.url!==url||!latest.active||!captured?.documentId)throw new Error('The search tab changed before the results could be checked.');
    const sources=validateResearchSources(captured.result);
    if(!sources.length)throw new Error('No supported search result was visible. Try again with two or three direct public links.');
-   setReview({plan,sources,ids:[],windowId:anchor.windowId});
+   setReview({plan,workingChat,sources,ids:[],windowId:anchor.windowId});
    setStatus('');
   }catch(e){if(!ctl.signal.aborted){setStatus('');setError(e instanceof Error?e.message:'Research could not start.')}}finally{current.current=null;setBusy(false)}
  }
@@ -113,11 +113,11 @@ export function useResearch(){
    }
    ctl.signal.throwIfAborted();
    const snapshot=researchSnapshot(evidence);
-   const raw=model?await model.propose(goal,{snapshot,previous:[],signal:ctl.signal}):await askCloud(cloudPayload(goal,snapshot,[]),ctl.signal);
+   const raw=model?await model.propose(goal,{snapshot,previous:[],signal:ctl.signal,workingChat:review.workingChat}):await askCloud(cloudPayload(goal,snapshot,[],review.workingChat),ctl.signal);
    ctl.signal.throwIfAborted();
    const decision=parseGuidedDecision(raw);
    if(decision.type!=='finish'&&decision.type!=='ask')throw new Error('The assistant did not return a readable comparison.');
-   setResult({id:crypto.randomUUID(),answer:decision.type==='finish'?decision.answer:decision.question,skipped:chosen.length-evidence.length,sources:evidence.map(({title,url})=>({title,url}))});
+   setResult({id:crypto.randomUUID(),question:decision.type==='ask',answer:decision.type==='finish'?decision.answer:decision.question,skipped:chosen.length-evidence.length,sources:evidence.map(({title,url})=>({title,url}))});
    setStatus('');
   }catch(e){
    if(ctl.signal.reason==='timeout')setError('Research timed out. Try fewer sources.');

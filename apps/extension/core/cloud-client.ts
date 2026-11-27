@@ -8,15 +8,20 @@ export function maskCloudText(value:string){
   .replace(/\b(?:sk-[\w-]+|[\w-]{24,})\b/g,'[identifier]')
   .replace(/\b(?:password|token|secret|api\s*key|otp|pin)\s*[:=]\s*\S+/gi,'[redacted]');
 }
-export function cloudPayload(goal:string,snapshot:GuidedSnapshot,previous:GuidedDecision[]){
- return {goal:maskCloudText(goal),text:snapshot.text.slice(0,12).map(x=>maskCloudText(x).slice(0,160)),
+export function cloudPayload(goal:string,snapshot:GuidedSnapshot,previous:GuidedDecision[],workingChat?:string){
+ return {goal:maskCloudText(goal),...(workingChat?{workingChat}:{}),text:snapshot.text.slice(0,12).map(x=>maskCloudText(x).slice(0,160)),
   ...(snapshot.links?.length?{links:snapshot.links.map(x=>maskCloudText(x).slice(0,160))}:{}),
   canScrollUp:snapshot.canScrollUp,canScrollDown:snapshot.canScrollDown,
   previousDirections:previous.flatMap(e=>e.type==='scroll'?[e.direction]:[])};
 }
 export async function askCloud(input:ReturnType<typeof cloudPayload>,signal:AbortSignal,send:typeof fetch=fetch){
- const response=await send(PLANNER_ORIGIN+'/planner/next',{method:'POST',headers:{'Content-Type':'application/json'},
-  cache:'no-store',credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',body:JSON.stringify(input),signal});
+ const request=(body:unknown)=>send(PLANNER_ORIGIN+'/planner/next',{method:'POST',headers:{'Content-Type':'application/json'},
+  cache:'no-store',credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',body:JSON.stringify(body),signal});
+ let response=await request(input);
+ if(response.status===400&&input.workingChat){
+  const {workingChat,...legacy}=input;
+  response=await request(legacy);
+ }
  if(!response.ok){
   if(response.status===401)throw new Error('This deployment has not enabled public cloud access yet.');
   if(response.status===429){
@@ -36,11 +41,13 @@ export async function askCloud(input:ReturnType<typeof cloudPayload>,signal:Abor
 }
 
 // A separate mode on the same budgeted endpoint; no page text or raw URLs.
-export async function askCloudIntent(goal:string,sites:{origin:string}[],signal:AbortSignal,send:typeof fetch=fetch){
- const response=await send(PLANNER_ORIGIN+'/planner/next',{method:'POST',headers:{'Content-Type':'application/json'},
-  cache:'no-store',credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',
-  body:JSON.stringify({mode:'intent',goal:maskCloudText(goal),sites:sites.map(site=>new URL(site.origin).hostname)}),signal});
- if(response.status===400)return undefined; // Older deployments can still answer page questions.
+export async function askCloudIntent(goal:string,sites:{origin:string}[],signal:AbortSignal,send:typeof fetch=fetch,workingChat?:string){
+ const payload={mode:'intent',goal:maskCloudText(goal),sites:sites.map(site=>new URL(site.origin).hostname)};
+ const request=(body:unknown)=>send(PLANNER_ORIGIN+'/planner/next',{method:'POST',headers:{'Content-Type':'application/json'},
+  cache:'no-store',credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',body:JSON.stringify(body),signal});
+ let response=await request({...payload,...(workingChat?{workingChat}:{})});
+ if(response.status===400&&workingChat)response=await request(payload);
+ if(response.status===400)return undefined;
  if(!response.ok)throw new Error(response.status===429?'The cloud request limit was reached. Try again shortly.':'Cloud command routing could not respond.');
  return (await response.json() as {decision?:unknown}).decision;
 }
