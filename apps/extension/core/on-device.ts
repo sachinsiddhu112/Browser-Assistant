@@ -12,7 +12,10 @@ type Recognition={
  onend:(()=>void)|null;
  start():void;abort():void;
 };
-type SpeechAPI={new():Recognition;available(options:{langs:string[];processLocally:true}):Promise<string>};
+type SpeechOptions={langs:string[];processLocally:true};
+type SpeechAPI={new():Recognition;available?(options:SpeechOptions):Promise<string>;install?(options:SpeechOptions):Promise<boolean>};
+export type DictationStatus='available'|'downloadable'|'downloading'|'unsupported'|'blocked';
+const speechOptions:SpeechOptions={langs:['en-US'],processLocally:true};
 type Platform=typeof globalThis & {LanguageModel?:ModelAPI;SpeechRecognition?:SpeechAPI;webkitSpeechRecognition?:SpeechAPI};
 const platform=globalThis as Platform;
 
@@ -35,17 +38,53 @@ export async function suggestOnDevice(command:string,signal:AbortSignal){
  }finally{instance.destroy()}
 }
 
-export async function startLocalDictation(onText:(text:string)=>void,onEnd:(error?:string)=>void){
- const Speech=platform.SpeechRecognition??platform.webkitSpeechRecognition;
- const lang='en-US';
- if(!Speech?.available||await Speech.available({langs:[lang],processLocally:true})!=='available'){
-  throw new Error('On-device English dictation is not available in this Chrome. You can still type.');
+function speechApi(){
+ return [platform.SpeechRecognition,platform.webkitSpeechRecognition].find(api=>typeof api?.available==='function');
+}
+
+export async function checkLocalDictation():Promise<DictationStatus>{
+ const Speech=speechApi();
+ if(!Speech?.available)return 'unsupported';
+ try{
+  if(!('processLocally' in new Speech()))return 'unsupported';
+  const status=await Speech.available(speechOptions);
+  if(status==='available'||status==='downloading')return status;
+  return status==='downloadable'&&typeof Speech.install==='function'?'downloadable':'unsupported';
+ }catch{return 'blocked'}
+}
+
+export class DictationUnavailable extends Error{
+ constructor(readonly status:Exclude<DictationStatus,'available'>){
+  super({
+   downloadable:'Download the English speech pack to use on-device dictation.',
+   downloading:'Chrome is downloading the English speech pack. Check again when it finishes.',
+   unsupported:'On-device English dictation isn’t supported in this Chrome. You can still type.',
+   blocked:'Chrome didn’t let the extension check local speech support. You can still type.',
+  }[status]);
  }
+}
+
+// Call directly from the download button's click; Chrome may require user activation.
+export function installEnglishSpeechPack(){
+ const Speech=speechApi();
+ if(!Speech?.install)throw new DictationUnavailable('unsupported');
+ return Speech.install(speechOptions);
+}
+
+export async function startLocalDictation(onText:(text:string)=>void,onEnd:(error?:string)=>void){
+ const state=await checkLocalDictation();
+ if(state!=='available')throw new DictationUnavailable(state);
+ const Speech=speechApi();
+ if(!Speech)throw new DictationUnavailable('unsupported');
  const recognizer=new Speech();
- if(!('processLocally' in recognizer))throw new Error('Local speech processing is not supported.');
- recognizer.lang=lang;recognizer.processLocally=true;recognizer.continuous=false;recognizer.interimResults=false;
+ recognizer.lang='en-US';recognizer.processLocally=true;recognizer.continuous=false;recognizer.interimResults=false;
  recognizer.onresult=e=>{const text=e.results[0]?.[0]?.transcript;if(text)onText(text.slice(0,1000))};
- recognizer.onerror=e=>onEnd(e.error==='not-allowed'?'Microphone access wasn’t allowed.':'Dictation stopped: '+e.error);
+ recognizer.onerror=e=>onEnd(
+  e.error==='not-allowed'?'Microphone access wasn’t allowed. Check Chrome’s microphone permission.':
+  e.error==='audio-capture'?'Chrome couldn’t find a working microphone.':
+  e.error==='no-speech'?'No speech was detected. Try again.':
+  e.error==='aborted'?undefined:'On-device dictation stopped: '+e.error
+ );
  recognizer.onend=()=>onEnd();
  recognizer.start();
  return ()=>recognizer.abort();

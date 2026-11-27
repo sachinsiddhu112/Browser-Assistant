@@ -1,0 +1,40 @@
+name: Native speech diagnostic
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/native-speech.yml'
+      - 'tests/e2e/native-speech-probe.spec.ts'
+permissions:
+  contents: read
+jobs:
+  speech:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm build
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Set up a local voice and a prerecorded microphone sample
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq speech-dispatcher speech-dispatcher-espeak-ng espeak-ng pulseaudio
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/speech-runtime"
+          install -d -m 700 "$XDG_RUNTIME_DIR"
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=assistant_fixture
+          pactl set-default-sink assistant_fixture
+          pactl load-module module-null-sink sink_name=assistant_input
+          pactl set-default-source assistant_input.monitor
+          pactl list short sources
+          motion="$RUNNER_TEMP/local-speech.wav"
+          espeak-ng -v en-us -s 140 -w "$motion" "Scroll down the page."
+          speech-dispatcher --spawn
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          echo "NATIVE_SPEECH_FIXTURE=$motion" >> "$GITHUB_ENV"
+      - run: xvfb-run -a pnpm exec playwright test tests/e2e/native-speech-probe.spec.ts
