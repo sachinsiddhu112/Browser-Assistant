@@ -523,8 +523,7 @@ test('YouTube uses verified results after a URL rewrite and attempts only select
   await context.route('https://www.youtube.com/**',route=>{
    const u=new URL(route.request().url());
    if(u.pathname==='/results'&&u.searchParams.get('search_query')===song){
-    if(!u.searchParams.has('sp'))return route.fulfill({status:302,headers:{location:target}});
-    return route.fulfill({contentType:'text/html',body:`<main>
+    return route.fulfill({contentType:'text/html',body:`<script>history.replaceState(null,'',${JSON.stringify(target)});</script><main>
       <ytd-ad-slot-renderer><a href="/watch?v=zzzzzzzzzzz">Promoted video</a></ytd-ad-slot-renderer>
       <yt-lockup-view-model><a href="/watch?v=${video}&pp=fixture" title="Casa Tupka – Honey Singh">Casa Tupka – Honey Singh</a></yt-lockup-view-model>
       <yt-lockup-view-model><a href="https://example.org/watch?v=lmnopqrstuv">External video</a></yt-lockup-view-model>
