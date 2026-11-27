@@ -502,3 +502,64 @@ test('application finder follows a reviewed link and only fills approved saved d
   await expect(settings.getByRole('textbox',{name:'Email address'})).toHaveValue('');
  }finally{await context.close();await rm(dir,{recursive:true,force:true})}
 });
+
+test('YouTube uses verified results after a URL rewrite and attempts only selected playback', async()=>{
+ const dir=await mkdtemp(resolve(tmpdir(),'assistant-media-'));
+ const extension=resolve('apps/extension/.output/chrome-mv3-test');
+ const context=await chromium.launchPersistentContext(dir,{channel:'chromium',headless:process.env.PW_HEADLESS==='1',args:['--disable-extensions-except='+extension,'--load-extension='+extension,'--autoplay-policy=no-user-gesture-required']});
+ try{
+  const worker=context.serviceWorkers()[0]??await context.waitForEvent('serviceworker');
+  const song='Casa Tupka Honey Singh';
+  const video='abcdefghijk';
+  const target='https://www.youtube.com/results?search_query=Casa+Tupka+Honey+Singh&sp=fixture';
+  let watchLoads=0;
+  // A real 3-second WAV in the Chromium fixture (never fetch real media).
+  const wav=Buffer.alloc(44+24_000*2);
+  wav.write('RIFF',0);wav.writeUInt32LE(wav.length-8,4);wav.write('WAVEfmt ',8);
+  wav.writeUInt32LE(16,16);wav.writeUInt16LE(1,20);wav.writeUInt16LE(1,22);
+  wav.writeUInt32LE(8000,24);wav.writeUInt32LE(16000,28);wav.writeUInt16LE(2,32);wav.writeUInt16LE(16,34);
+  wav.write('data',36);wav.writeUInt32LE(wav.length-44,40);
+  for(let n=0;n<24_000;n++)wav.writeInt16LE(Math.round(80*Math.sin(n*0.3456)),44+n*2);
+  await context.route('https://www.youtube.com/**',route=>{
+   const u=new URL(route.request().url());
+   if(u.pathname==='/results'&&u.searchParams.get('search_query')===song){
+    if(!u.searchParams.has('sp'))return route.fulfill({status:302,headers:{location:target}});
+    return route.fulfill({contentType:'text/html',body:`<main>
+      <ytd-ad-slot-renderer><a href="/watch?v=zzzzzzzzzzz">Promoted video</a></ytd-ad-slot-renderer>
+      <yt-lockup-view-model><a href="/watch?v=${video}&pp=fixture" title="Casa Tupka – Honey Singh">Casa Tupka – Honey Singh</a></yt-lockup-view-model>
+      <yt-lockup-view-model><a href="https://example.org/watch?v=lmnopqrstuv">External video</a></yt-lockup-view-model>
+      <yt-lockup-view-model hidden><a href="/watch?v=zyxwvutsrqp">Hidden video</a></yt-lockup-view-model>
+    </main>`});
+   }
+   if(u.pathname==='/watch'){
+    watchLoads++;
+    return route.fulfill({contentType:'text/html',body:`<!doctype html><main id="movie_player"><video controls class="html5-main-video" src="/fixture.wav"></video></main>
+     <script>document.querySelector('video').addEventListener('play',()=>{document.body.dataset.plays=1+(+document.body.dataset.plays||0)});</script>`});
+   }
+   if(u.pathname==='/fixture.wav')return route.fulfill({contentType:'audio/wav',body:wav});
+   return route.fulfill({contentType:'text/html',body:'<h1>Start fixture</h1>'});
+  });
+  const site=await context.newPage();await site.goto('https://www.youtube.com/');
+  const panel=await context.newPage();await panel.goto('chrome-extension://'+new URL(worker.url()).host+'/sidepanel.html');
+  const input=panel.getByRole('textbox',{name:'Command'});
+  await input.fill('Play '+song+' on YouTube');
+  await site.bringToFront();
+  await panel.evaluate(()=>document.querySelector('form')?.requestSubmit());
+  const choices=panel.getByRole('region',{name:'YouTube choices'});
+  await expect(choices.getByRole('button')).toHaveCount(1);
+  await expect(site).toHaveURL(target);
+  expect(watchLoads).toBe(0);
+  await choices.getByRole('button',{name:'Casa Tupka – Honey Singh'}).evaluate((el:HTMLButtonElement)=>el.click());
+  await expect(panel.getByRole('status')).toContainText('Selected YouTube video is playing');
+  await expect(site).toHaveURL('https://www.youtube.com/watch?v='+video);
+  await expect(site.locator('body')).toHaveAttribute('data-plays','1');
+  expect(watchLoads).toBe(1);
+
+  await input.fill('Play No fixture match on YouTube');
+  await site.bringToFront();
+  await panel.evaluate(()=>document.querySelector('form')?.requestSubmit());
+  await expect(panel.getByRole('status')).toContainText('could not find a playable result',{timeout:22_000});
+  await expect(panel.getByRole('status')).toContainText('needs-input');
+  expect(watchLoads).toBe(1);
+ }finally{await context.close();await rm(dir,{recursive:true,force:true})}
+});
