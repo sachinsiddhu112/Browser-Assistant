@@ -128,3 +128,7 @@ An explicit Play request retains the song text and treats a single spelling edit
 ### v0.8.0: one temporary working chat per Chrome window
 
 Keep recent commands, outcomes, one pending clarification, and verified comparison sources in restricted extension session storage. Restore context when the panel is reopened, treat unrelated inputs as separate tasks, and explicitly resolve continuation or a saved source before acting. Recheck the original document for page clarifications and retain the existing review before opening any saved source. New chat and closing the window discard the context; no database, sync, or history archive. Send only a bounded redacted projection, with no saved contact details or source addresses. Deploy the optional-context cloud planner update to enable cloud continuation; the local Chrome model can use the context without deployment.
+
+### v0.8.1: local English dictation setup
+
+Show a download button when the browser offers its local English speech pack. Installing never turns on the microphone; click Dictate again after the pack is ready. Differentiate unavailable, blocked, downloading and microphone permission failures. Recognition still requires on-device processing and never falls back to cloud audio. Extension only.

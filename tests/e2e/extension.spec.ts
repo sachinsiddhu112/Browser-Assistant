@@ -621,3 +621,52 @@ test('temporary chat restores follow-up context, permits a different task and re
   await expect(status).toContainText('Event details.');
  }finally{await context.close();await rm(dir,{recursive:true,force:true})}
 });
+
+test('dictation offers a local language pack without starting the microphone during setup',async()=>{
+ const dir=await mkdtemp(resolve(tmpdir(),'assistant-dictation-'));
+ const extension=resolve('apps/extension/.output/chrome-mv3');
+ const context=await chromium.launchPersistentContext(dir,{channel:'chromium',headless:process.env.PW_HEADLESS==='1',
+  args:['--disable-extensions-except='+extension,'--load-extension='+extension]});
+ try{
+  const worker=context.serviceWorkers()[0]??await context.waitForEvent('serviceworker');
+  const panel=await context.newPage();await panel.goto('chrome-extension://'+new URL(worker.url()).host+'/sidepanel.html');
+  await panel.evaluate(()=>{
+   const state={pack:'downloadable',installs:0,starts:0};
+   (window as any).speechFixture=state;
+   class LocalSpeech{
+    static available({processLocally,langs}:{processLocally:boolean;langs:string[]}){
+     if(processLocally!==true||langs[0]!=='en-US')throw Error('Unexpected speech configuration');
+     return Promise.resolve(state.pack);
+    }
+    static install(){state.installs++;state.pack='available';return Promise.resolve(true)}
+    processLocally=false;
+    onresult?: (e:any)=>void;
+    onend?: ()=>void;
+    start(){
+     if(!this.processLocally)throw new Error('No cloud dictation');
+     state.starts++;
+     setTimeout(()=>{this.onresult?.({results:[[{transcript:'Scroll down'}]]});this.onend?.()},25);
+    }
+    abort(){this.onend?.()}
+   }
+   Object.defineProperty(globalThis,'SpeechRecognition',{configurable:true,value:LocalSpeech});
+   globalThis.fetch=async()=>{throw Error('Dictation must not contact the cloud')};
+  });
+  const state=()=>panel.evaluate(()=>(window as any).speechFixture);
+  const status=panel.getByRole('status',{name:'Dictation status'});
+  const mic=panel.getByRole('button',{name:'Dictate locally (English)'});
+  await mic.click();
+  await expect(status).toContainText('Download the English speech pack');
+  expect(await state()).toEqual({pack:'downloadable',installs:0,starts:0});
+  await panel.getByRole('button',{name:'Download English speech pack'}).click();
+  await expect(status).toContainText('English speech pack ready');
+  expect(await state()).toEqual({pack:'available',installs:1,starts:0});
+  await mic.click();
+  await expect(panel.getByRole('textbox',{name:'Command'})).toHaveValue('Scroll down');
+  expect((await state()).starts).toBe(1);
+  await panel.evaluate(()=>{(window as any).speechFixture.pack='unavailable'});
+  await mic.click();
+  await expect(status).toContainText('isn’t supported');
+  await expect(panel.getByRole('button',{name:'Download English speech pack'})).toHaveCount(0);
+ }finally{await context.close();await rm(dir,{recursive:true,force:true})}
+});

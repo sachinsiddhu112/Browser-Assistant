@@ -2,7 +2,7 @@ import {chatKey,chatSources,modelContext,pendingQuestion,taskKey,WorkingChat,typ
 import React,{useEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Session,terminal} from '../../core/session';
-import {startLocalDictation,suggestOnDevice} from '../../core/on-device';
+import {DictationUnavailable,installEnglishSpeechPack,startLocalDictation,suggestOnDevice,type DictationStatus} from '../../core/on-device';
 import {parseFormIntent} from '../../core/form-intent';
 import {parseSiteIntent} from '../../core/site-intent';
 import {commandSites,intentInstructions,resolveIntent,resumesPending} from '../../core/command-intent';
@@ -41,6 +41,9 @@ function App(){
  const [session,setSession]=useState<Session|null>(null),[command,setCommand]=useState(''),[error,setError]=useState(''),[pending,setPending]=useState(false);
  const application=useApplication(setSession);
  const [preparing,setPreparing]=useState(false),[listening,setListening]=useState(false),[draftNotice,setDraftNotice]=useState('');
+ const [speechPack,setSpeechPack]=useState<DictationStatus|null>(null);
+ const [installingSpeechPack,setInstallingSpeechPack]=useState(false);
+ const [dictationNotice,setDictationNotice]=useState('');
  const [siteReview,setSiteReview]=useState<ReturnType<typeof parseSiteIntent>>(null);
  const [intentQuestion,setIntentQuestion]=useState('');
  const [chat,setChat]=useState<WorkingChat|null>(null);
@@ -128,11 +131,26 @@ function App(){
  }
  async function dictate(){
   if(listening){stopSpeech.current?.();return}
-  speaker.cancel();setSiteReview(null);setListening(true);setError('');setDraftNotice('');
+  speaker.cancel();setSiteReview(null);setListening(true);setError('');setDraftNotice('');setDictationNotice('');setSpeechPack(null);
   try{stopSpeech.current=await startLocalDictation(
    text=>{setCommand(text);setDraftNotice('Dictated on this device. Review the draft before running it.')},
    reason=>{stopSpeech.current=null;setListening(false);if(reason)setError(reason)},
-  )}catch(e){setListening(false);setError(e instanceof Error?e.message:'Could not start dictation.')}
+  )}catch(e){
+   setListening(false);
+   if(e instanceof DictationUnavailable){setSpeechPack(e.status);setDictationNotice(e.message)}
+   else setError(e instanceof Error?e.message:'Could not start dictation.');
+  }
+ }
+ async function installSpeechPack(){
+  if(installingSpeechPack)return;
+  setInstallingSpeechPack(true);setError('');setDictationNotice('Downloading the English speech pack. The microphone is off.');
+  try{
+   const installed=await installEnglishSpeechPack();
+   if(installed){setSpeechPack('available');setDictationNotice('English speech pack ready. Click Dictate to start the microphone.')}
+   else{setSpeechPack('downloadable');setDictationNotice('Chrome couldn’t download the English speech pack. Try again or type your command.')}
+  }catch{
+   setSpeechPack('downloadable');setDictationNotice('Chrome didn’t let the extension install the speech pack. You can retry or type your command.');
+  }finally{setInstallingSpeechPack(false)}
  }
  async function send(type:string,extra:object={}){
   setPending(true);setError('');
@@ -365,8 +383,11 @@ function App(){
    </div>
    <div className="composer-actions">
     {!siteReview&&<button className="primary" type="submit" disabled={busy||!command.trim()}>Run task <Icon name="arrow"/></button>}
-    <button className="secondary mic" type="button" disabled={pending||running||guiding||preparing||research.busy||application.busy||!!application.review} onClick={()=>void dictate()} title={listening?'Stop listening':'Dictate locally (English)'} aria-label={listening?'Stop listening':'Dictate locally (English)'}><Icon name="mic"/>{listening?'Stop listening':'Dictate'}</button>
+    <button className="secondary mic" type="button" disabled={installingSpeechPack||pending||running||guiding||preparing||research.busy||application.busy||!!application.review} onClick={()=>void dictate()} title={listening?'Stop listening':'Dictate locally (English)'} aria-label={listening?'Stop listening':'Dictate locally (English)'}><Icon name="mic"/>{listening?'Stop listening':'Dictate'}</button>
    </div>
+   {dictationNotice&&<p className="muted helper" role="status" aria-label="Dictation status">{dictationNotice}</p>}
+   {speechPack==='downloadable'&&<button className="secondary" type="button" disabled={installingSpeechPack||busy}
+    onClick={()=>void installSpeechPack()}>{installingSpeechPack?'Downloading English speech pack…':'Download English speech pack'}</button>}
    {draftNotice&&<p className="muted helper">{draftNotice}</p>}
   </form>
 
