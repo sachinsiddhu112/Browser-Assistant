@@ -18,7 +18,7 @@ export const Request=z.discriminatedUnion('type',[
  z.object({type:z.literal('SAVE_PROFILE'),profile:Profile}).strict(),
  z.object({type:z.literal('DELETE_PROFILE')}).strict(),
  z.object({type:z.literal('DRAFT_PROFILE'),expectedTab:z.object({id:z.number().int().nonnegative(),url:z.string().url()}).strict().optional()}).strict(),
- z.object({type:z.literal('START'),command:z.string().trim().min(1).max(1000)}).strict(),
+ z.object({type:z.literal('START'),command:z.string().trim().min(1).max(1000),expectedTab:z.object({id:z.number().int().nonnegative(),url:z.string().url()}).strict().optional()}).strict(),
  z.object({type:z.literal('PLAY_VIDEO'),sessionId:z.string().uuid(),videoId:z.string().regex(/^[\w-]{11}$/)}).strict(),
  z.object({type:z.literal('START_GUIDED'),mode:z.literal('local').default('local'),expectedTab:z.object({id:z.number().int().nonnegative(),url:z.string().url()}).strict().optional()}).strict(),
  z.object({type:z.literal('START_CLOUD'),mode:z.literal('cloud'),expectedTab:z.object({id:z.number().int().nonnegative(),url:z.string().url()}).strict()}).strict(),

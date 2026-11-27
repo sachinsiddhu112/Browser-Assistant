@@ -375,7 +375,12 @@ export default defineBackground(()=>{
     return next;
    }
    const old=await read();if(old&&!terminal(old))throw new Error('Stop the current task first');
-   const tabId=await activeTab(routeIntent(req.command)?.type!=='open_youtube_tab'&&!parseSiteIntent(req.command));const s=await write({id:crypto.randomUUID(),tabId,command:req.command,phase:'thinking',message:'Routing local command'});
+   const tabId=await activeTab(routeIntent(req.command)?.type!=='open_youtube_tab'&&!parseSiteIntent(req.command));
+   if(req.expectedTab){
+    const tab=await browser.tabs.get(tabId);
+    if(req.expectedTab.id!==tabId||req.expectedTab.url!==tab.url||!tab.active)throw new Error('The active page changed. Run the command again.');
+   }
+   const s=await write({id:crypto.randomUUID(),tabId,command:req.command,phase:'thinking',message:'Routing local command'});
    setTimeout(()=>{void execute(s).catch(console.error)},0);return s;
   }).then(result=>respond(result&&('session' in result||'profile' in result)?{ok:true,...result}:{ok:true,session:result}),e=>respond({ok:false,error:e instanceof Error?e.message:'Request failed'}));return true;
  });

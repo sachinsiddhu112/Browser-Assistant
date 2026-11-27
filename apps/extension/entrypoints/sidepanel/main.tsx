@@ -205,7 +205,10 @@ function App(){
      const intent=resolveIntent(raw,goal,candidates);
      const current=await browser.tabs.get(expectedTab.id);
      if(!current.active||current.url!==expectedTab.url)throw new Error('The active page changed. Run the command again.');
-     if(intent.type==='skill'){await send('START',{command:intent.command});return}
+     if(intent.type==='skill'){await send('START',{command:intent.command,expectedTab});return}
+     if(intent.type==='profile'){await send('DRAFT_PROFILE',{expectedTab});return}
+     if(intent.type==='job'){await application.start(intent.job);return}
+     if(intent.type==='research'){await research.start(intent.plan);return}
      if(intent.type==='site'){setSiteReview(intent.site);return}
      if(intent.type==='clarify'){setIntentQuestion(intent.message);return}
     }
@@ -241,6 +244,8 @@ function App(){
  function stop(){
   if(siteReview){setSiteReview(null);return}
   speaker.cancel();guidedAbort.current?.abort('stopped');
+  if(research.busy)research.stop();
+  if(application.busy)application.stop();
   void send('STOP');
  }
  useEffect(()=>{

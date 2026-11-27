@@ -104,6 +104,7 @@ test('extension local navigation and scrolling',async()=>{
     availability:async()=> 'available',
     create:async()=>({destroy:()=>{},prompt:async(input:string)=>{
      const body=JSON.parse(input);
+     if(body.goal.startsWith('Move me farther down')&&!body.view)return '{"intent":"scroll_down"}';
      if(body.goal.startsWith('Could you pop')&&!body.view)return '{"intent":"youtube_tab"}';
      if(body.goal.startsWith('Does this page')&&!body.view)return '{"intent":"guided"}';
      if(body.goal.startsWith('Does this page')&&body.view)return '{"type":"ask","question":"No matching link in the viewed page."}';
@@ -117,6 +118,9 @@ test('extension local navigation and scrolling',async()=>{
    await panel.evaluate(()=>document.querySelector('form')?.requestSubmit());
   };
   await site.goto('https://example.com/');
+  await run('Move me farther down this page');
+  await expect(panel.getByRole('status')).toContainText('Page scrolled');
+  expect(await site.evaluate(()=>scrollY)).toBeGreaterThan(0);
   const originalTabCount=context.pages().length;
   await run('Does this page contain a link to YouTube?');
   await expect(panel.getByRole('status')).toContainText('needs-input');
@@ -403,6 +407,10 @@ test('research selects two sites, compares verified evidence and speaks the resu
    }});
    globalThis.fetch=async (_input,init)=>{
     const body=JSON.parse(String(init?.body));globals.fixture.requests.push(body);
+    if(body.mode==='intent'){
+     if(body.goal!=='Could you look up the differences in request validation in two frameworks?'||body.text)throw new Error('Expected command-only intent');
+     return new Response('{"decision":{"intent":"compare","args":["request validation in two frameworks"]}}');
+    }
     if(!body.text.includes('Source 1: Defaults | Schema A')||!body.text.includes('Source 2: Defaults | Schema B'))throw new Error('Missing evidence from both sites');
     return new Response(JSON.stringify({decision:{type:'finish',answer:'Source 1 uses Schema A. Source 2 uses Schema B.'}}));
    };
@@ -411,12 +419,12 @@ test('research selects two sites, compares verified evidence and speaks the resu
   await expect(panel.getByRole('button',{name:'Speak results'})).toHaveAttribute('aria-pressed','false');
   await panel.getByRole('button',{name:'Speak results'}).evaluate((button:HTMLButtonElement)=>button.click());
   await expect(panel.getByRole('button',{name:'Speak results'})).toHaveAttribute('aria-pressed','true');
-  await panel.getByRole('textbox',{name:'Command'}).fill('Compare request validation in two frameworks');
+  await panel.getByRole('textbox',{name:'Command'}).fill('Could you look up the differences in request validation in two frameworks?');
   await source.bringToFront();
   await panel.evaluate(()=>document.querySelector('form')?.requestSubmit());
   const review=panel.getByRole('region',{name:'Research sources'});
   await expect(review).toContainText('Framework one');
-  expect((await get()).requests).toHaveLength(0);
+  expect((await get()).requests).toHaveLength(1);
   await review.getByRole('checkbox').nth(0).check();
   await review.getByRole('checkbox').nth(1).check();
   await review.getByRole('button',{name:'Open and read selected sources'}).click();

@@ -18,6 +18,26 @@ describe('command intent boundaries',()=>{
   expect(resolveIntent({intent:'guided'},'Is there a YouTube link here?')).toEqual({type:'guided'});
   expect(resolveIntent({intent:'youtube_here'},'What is this page?')).toMatchObject({type:'clarify'});
  });
+ it('uses the same resolver for search, playback, research, and reviewed contact workflows',()=>{
+  const cases=[
+   ['google_search','Look up NestJS pipes for me on Google','NestJS pipes','Search Google for NestJS pipes'],
+   ['youtube_play','Find and play Kesariya on YouTube','Kesariya','Play Kesariya on YouTube'],
+   ['search_type','Put NestJS into the search box on this page','NestJS','Type NestJS into search'],
+  ];
+  for(const [intent,phrase,query,command] of cases){
+   expect(routeIntent(phrase)).toBeNull();
+   expect(resolveIntent({intent,args:[query]},phrase)).toEqual({type:'skill',command});
+  }
+  expect(resolveIntent({intent:'compare',args:['NestJS and Fastify validation']},'Could you look up the differences between NestJS and Fastify validation for me?'))
+   .toMatchObject({type:'research',plan:{query:'NestJS and Fastify validation'}});
+  expect(resolveIntent({intent:'compare',args:['[link] and [link]']},'What differs between https://docs.nestjs.com/pipes and https://fastify.dev/docs/latest?'))
+   .toMatchObject({type:'research',plan:{direct:[{url:'https://docs.nestjs.com/pipes'},{url:'https://fastify.dev/docs/latest'}]}});
+  expect(resolveIntent({intent:'profile'},'Put the contact info I saved into this form for review')).toEqual({type:'profile'});
+  expect(resolveIntent({intent:'job',args:['Backend Engineer','Acme','Noida']},'Find where Acme takes applications for Backend Engineer in Noida'))
+   .toMatchObject({type:'job',job:{role:'Backend Engineer',organization:'Acme',location:'Noida'}});
+  expect(resolveIntent({intent:'youtube_play',args:['Invented song']},'Could you play Kesariya on YouTube?')).toMatchObject({type:'clarify'});
+  expect(resolveIntent({intent:'job',args:['Backend Engineer','Acme','Delhi']},'Find where Acme takes applications for Backend Engineer in Noida')).toMatchObject({type:'clarify'});
+ });
  it('only accepts a valid site index for literal user addresses, not arbitrary output, email, or private sites',()=>{
   const command='Please bring up docs.nestjs.com and keep this tab (not example.org).';
   const sites=commandSites(command);

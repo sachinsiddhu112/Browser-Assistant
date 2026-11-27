@@ -163,6 +163,9 @@ test('intent mode excludes page data and validates indexed destinations and skil
  assert.throws(()=>parseCloudIntent({intent:'open_site',target:1},1));
  assert.throws(()=>parseCloudIntent({intent:'open_site',target:0,url:'https://external.example/'},1));
  assert.throws(()=>parseCloudIntent({intent:'submit'},1));
+ assert.deepEqual(parseCloudIntent({intent:'job',args:['Backend Engineer','Acme','Noida']},0),{intent:'job',args:['Backend Engineer','Acme','Noida']});
+ assert.throws(()=>parseCloudIntent({intent:'job',args:['Backend Engineer']},0));
+ assert.throws(()=>parseCloudIntent({intent:'google_search',args:['one','two']},0));
  const send:typeof fetch=async(_href,options)=>{
   const body=JSON.parse(String(options?.body));
   assert.match(body.input[0].content,/Classify one browser request/);
