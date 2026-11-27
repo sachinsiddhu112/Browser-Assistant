@@ -1,5 +1,19 @@
 import {Action} from '@browser-assistant/shared';
 export const YOUTUBE_HOME='https://www.youtube.com/';
+// Correct a single typo in an explicitly named service, never in a URL or title.
+export function normalizePlatform(command:string){
+ return command.replace(/(\bon\s+)([a-z]{6,8})([,.!?]*\s*)$/i,(raw,prefix,word,suffix)=>{
+  const alias='youtube',token=word.toLowerCase();
+  let i=0;while(i<Math.min(token.length,alias.length)&&token[i]===alias[i])i++;
+  const a=token.slice(i),b=alias.slice(i);
+  const near=a===b||
+   (a.length===b.length&&(a.slice(1)===b.slice(1)||
+    (a.length>1&&a[0]===b[1]&&a[1]===b[0]&&a.slice(2)===b.slice(2))))||
+   (a.length===b.length+1&&a.slice(1)===b)||
+   (a.length+1===b.length&&a===b.slice(1));
+  return near?prefix+alias+suffix:raw;
+ });
+}
 export function routeIntent(command:string):Action|null{
  const c=command.trim();
  const type=/^type (.+) into search$/i.exec(c);
@@ -11,7 +25,7 @@ export function routeIntent(command:string):Action|null{
  if(/^go back$/i.test(c))return {type:'go_back'};
  if(/^(next|previous) tab$/i.test(c))return {type:'switch_tab',direction:c.toLowerCase().startsWith('next')?'next':'previous'};
  if(/^scroll (up|down)$/i.test(c))return {type:'scroll',direction:c.toLowerCase().endsWith('up')?'up':'down'};
- const song=/^play (.+) on youtube$/i.exec(c);
+ const song=/^(?:please\s+)?play\s+(?:me\s+)?(.+?)\s+on\s+youtube[,.!?]*$/i.exec(normalizePlatform(c));
  if(song)return {type:'navigate',url:'https://www.youtube.com/results?search_query='+encodeURIComponent(song[1])};
  // Match only a complete, explicit command for the fixed YouTube destination.
  const tabCommand=c.replace(/[ \t]+/g,' ');

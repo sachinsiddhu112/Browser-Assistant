@@ -5,7 +5,7 @@ import {startLocalDictation,suggestOnDevice} from '../../core/on-device';
 import {parseFormIntent} from '../../core/form-intent';
 import {parseSiteIntent} from '../../core/site-intent';
 import {commandSites,intentInstructions,resolveIntent} from '../../core/command-intent';
-import {routeIntent} from '../../core/intent';
+import {normalizePlatform,routeIntent} from '../../core/intent';
 import {GuidedSnapshot} from '../../core/guided-contract';
 import {runGuided} from '../../core/guided-planner';
 import {checkGuidedModel,createGuidedModel,createLocalTaskModel,GUIDE_TIMEOUT,type LocalModelAvailability} from '../../core/guided-model';
@@ -183,12 +183,13 @@ function App(){
    controller.signal.throwIfAborted();
    if(!site){
     const candidates=commandSites(goal);
+    const intentGoal=normalizePlatform(goal);
     let raw:unknown;
     if(state==='available'){
      let classifier:Awaited<ReturnType<typeof createLocalTaskModel>>|undefined;
      try{
       classifier=await createLocalTaskModel(intentInstructions,controller.signal);
-      const answer=await classifier.prompt(JSON.stringify({goal,sites:candidates.map(s=>new URL(s.origin).hostname)}),{signal:controller.signal});
+      const answer=await classifier.prompt(JSON.stringify({goal:intentGoal,sites:candidates.map(s=>new URL(s.origin).hostname)}),{signal:controller.signal});
       if(answer.length>1000)throw new Error('Response too long');
       raw=JSON.parse(answer);
       resolveIntent(raw,goal,candidates);
@@ -198,7 +199,7 @@ function App(){
     if(raw===undefined){
      const current=await browser.tabs.get(expectedTab.id);
      if(!current.active||current.url!==expectedTab.url)throw new Error('The active page changed. Run the command again.');
-     if(!current.incognito)raw=await askCloudIntent(goal,candidates,controller.signal);
+     if(!current.incognito)raw=await askCloudIntent(intentGoal,candidates,controller.signal);
     }
     controller.signal.throwIfAborted();
     if(raw!==undefined){

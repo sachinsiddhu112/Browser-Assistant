@@ -120,3 +120,7 @@ Deploy the backward-compatible planner update before relying on cloud intent rou
 ### v0.7.2: YouTube search-to-play handoff
 
 Recognize the same visible search query despite equivalent URL encoding or extra presentation parameters. Read verified, visible video titles from multiple result layouts and keep the user's choice step. If there is no supported match, leave the search open and report that nothing played. After selection, make at most one standard player play request and verify that the selected non-ad video advances. If playback is blocked, unverified or muted, explain the manual step. This is an extension-only update.
+
+### v0.7.3: tolerate a typo in an explicit media command
+
+An explicit Play request retains the song text and treats a single spelling edit in the named YouTube platform as the same service. The fast path routes playback without asking the model to guess, while other phrasing still has semantic routing. Literal URLs are never fuzzily rewritten. Extension-only.

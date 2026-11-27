@@ -509,9 +509,9 @@ test('YouTube uses verified results after a URL rewrite and attempts only select
  const context=await chromium.launchPersistentContext(dir,{channel:'chromium',headless:process.env.PW_HEADLESS==='1',args:['--disable-extensions-except='+extension,'--load-extension='+extension,'--autoplay-policy=no-user-gesture-required']});
  try{
   const worker=context.serviceWorkers()[0]??await context.waitForEvent('serviceworker');
-  const song='Casa Tupka Honey Singh';
+  const song='some Casa Tupka song by honey singh';
   const video='abcdefghijk';
-  const target='https://www.youtube.com/results?search_query=Casa+Tupka+Honey+Singh&sp=fixture';
+  const target='https://www.youtube.com/results?'+new URLSearchParams({search_query:song,sp:'fixture'});
   let watchLoads=0;
   // A real 3-second WAV in the Chromium fixture (never fetch real media).
   const wav=Buffer.alloc(44+24_000*2);
@@ -541,7 +541,8 @@ test('YouTube uses verified results after a URL rewrite and attempts only select
   const site=await context.newPage();await site.goto('https://www.youtube.com/');
   const panel=await context.newPage();await panel.goto('chrome-extension://'+new URL(worker.url()).host+'/sidepanel.html');
   const input=panel.getByRole('textbox',{name:'Command'});
-  await input.fill('Play '+song+' on YouTube');
+  await panel.evaluate(()=>{globalThis.fetch=async()=>{throw new Error('Explicit play command should not need a planner')}});
+  await input.fill('play '+song+' on youtbue,');
   await site.bringToFront();
   await panel.evaluate(()=>document.querySelector('form')?.requestSubmit());
   const choices=panel.getByRole('region',{name:'YouTube choices'});
