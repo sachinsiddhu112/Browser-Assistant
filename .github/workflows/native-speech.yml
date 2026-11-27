@@ -29,6 +29,9 @@ jobs:
           pulseaudio --start --exit-idle-time=-1
           pactl load-module module-null-sink sink_name=assistant_fixture
           pactl set-default-sink assistant_fixture
+          pactl load-module module-null-sink sink_name=assistant_input
+          pactl set-default-source assistant_input.monitor
+          pactl list short sources
           motion="$RUNNER_TEMP/local-speech.wav"
           espeak-ng -v en-us -s 140 -w "$motion" "Scroll down the page."
           speech-dispatcher --spawn
